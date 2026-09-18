@@ -30,11 +30,17 @@ Person1 negative sample only (writes tampered PNG):
 python src/image_stego.py --tamper
 ```
 
-Person6 GUI skeleton:
+Person6 GUI (Tkinter, no extra install):
 
 ```bash
 python src/gui_app.py
 ```
+
+Tabs: **Protect** (FR1-FR7, FR9) · **Verify** (FR8-FR10) · **Test Cases** (FR11, all
+positive + negative cases in one click). Every run is saved to `tests/evidence/<time>_<action>_<media>/` as
+`report.json` (params, steps, SHA-256 of every file, environment, git commit) and
+`summary.md` (paste-ready table). An image test-case run writes ~50 MB of PNGs, so
+commit only the runs you need as evidence.
 
 ## Structure
 
@@ -51,7 +57,9 @@ python src/gui_app.py
 │   ├── audio_stego.py       Person2
 │   ├── start_location.py    Person3
 │   ├── verdict.py           Person4
-│   └── gui_app.py           Person6
+│   ├── gui_app.py           Person6  (Tkinter app: tabs)
+│   ├── gui_components.py    Person6  (reusable widgets)
+│   └── gui_pipeline.py      Person6  (wiring + evidence, no Tk)
 ├── keys/                    RSA keypair (demo)
 ├── samples/                 cover / stego / tampered
 └── tests/                   evidence
@@ -83,3 +91,38 @@ make_tampered_image(stego, tampered_out, start_location, lsb_depth)
 ```
 
 Indexing: flat RGB sample index. Wire framing owned by `crypto_utils`, not image_stego.
+
+## Person6 GUI API (for plugging in your FR)
+
+The GUI detects unfinished functions (body is only `raise NotImplementedError`) and
+shows them as **PENDING**. Implement your function and the GUI uses it on the next
+run -- no GUI change needed.
+
+| Owner | Implement | GUI effect |
+|---|---|---|
+| Person3 | `start_location.derive_start_location(cover_size, seed)` | "Derive from seed (FR7)" option starts working; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
+| Person3 | `start_location.explain_security()` -> `str` | Available via `gui_pipeline.explain_start_location()` (no tab yet) |
+| Person4 | `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid)` | Replaces the provisional verdict (marked `*`). `hash_valid` may be `None`. Add a `context=None` keyword to also receive extraction error, printable ratio, start location, etc. |
+| Person4 | `verdict.run_attack_simulation()` -> list of dicts or `str` | Available via `gui_pipeline.run_attack_simulation()`; render with `gui_components.DataTable` (no tab yet) |
+| Person5 | *(new, optional)* `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); unblocks the "media edited" test case |
+
+Call the pipeline without the GUI:
+
+```python
+from gui_pipeline import protect, verify, run_case_suite, default_params
+r = verify("samples/stego_image_short.png", default_params(start=100, lsb_depth=2))
+print(r.outcome, r.provisional, [(s.fr, s.status) for s in r.steps])
+```
+
+Reuse a widget in your own window:
+
+```python
+from gui_components import VerdictBanner, StepList, CaseTable, DataTable, MediaPreview
+banner.show("Tampered")            # red NEGATIVE CASE banner
+steps.set_steps(result.steps)       # per-FR PASS / FAIL / PENDING with detail
+table.set_rows(rows)                # expected vs actual test-case table
+```
+
+Test cases live in `gui_pipeline.CASES`; message presets (short/large/custom,
+ALIGNMENT.md Section 7) in `gui_pipeline.MESSAGE_PRESETS` -- replace the placeholder
+texts with the chosen Learning Outcome and the spec's Project Overview.
