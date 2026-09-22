@@ -49,6 +49,19 @@ VERDICTS = [
     "Cannot Verify",
 ]
 
+# Fixed embedding parameters used by every scenario in run_attack_simulation()'s
+# real-attack section (image LSB path). Fixed rather than user-adjustable so
+# every scenario is directly comparable -- and exposed here as the single
+# source of truth so the GUI can display them (Tabs 1-3 already show
+# "Embedding parameters" for a live run; this is the equivalent for the
+# attack simulation, which doesn't take user input).
+ATTACK_SIM_PARAMS = {
+    "start_location": 20,
+    "lsb_depth": 2,
+    "cover_size": "48x48 RGB PNG, throwaway, generated fresh each run",
+    "key_size": "RSA-2048, freshly generated each run (not the team's real keys/)",
+}
+
 # printable_ratio below this, on a payload that failed to parse as JSON, is our
 # signal that we decoded noise rather than a real (just-corrupted) payload.
 _TEXTLIKE_THRESHOLD = 0.85
@@ -230,7 +243,7 @@ def _real_attack_scenarios() -> list[dict]:
 
     rows = []
     tmp = Path(tempfile.mkdtemp(prefix="acw1-attacksim-"))  # OS temp dir, not the repo
-    start, lsb = 20, 2
+    start, lsb = ATTACK_SIM_PARAMS["start_location"], ATTACK_SIM_PARAMS["lsb_depth"]
 
     priv, pub = crypto_utils.generate_keypair(
         priv_path=str(tmp / "priv.pem"), pub_path=str(tmp / "pub.pem"))
@@ -289,9 +302,15 @@ def _real_attack_scenarios() -> list[dict]:
             steps.append(_step("FR3", "Parse payload JSON", "ok",
                                f"message={payload.get('message')!r}, nonce={payload.get('nonce', '')[:12]}..."))
         except Exception as exc:
+            if ctx["printable_ratio"] >= _TEXTLIKE_THRESHOLD:
+                interpretation = ("still mostly text -- a corrupted-but-real payload, not random "
+                                  "noise (the signature check below is what actually rejects this one)")
+            else:
+                interpretation = ("mostly non-printable -- this looks like noise from reading the "
+                                  "wrong offset, not a corrupted real payload")
             steps.append(_step("FR3", "Parse payload JSON", "fail",
-                               f"{type(exc).__name__}: {exc} ({ctx['printable_ratio']:.0%} printable bytes -- "
-                               "looks like noise, not a corrupted-but-real payload)"))
+                               f"{type(exc).__name__}: {exc} ({ctx['printable_ratio']:.0%} printable "
+                               f"bytes -- {interpretation})"))
 
         sig_valid = crypto_utils.verify_signature(payload_bytes, sig, pub)
         steps.append(_step("FR4", "Verify RSA signature", "ok" if sig_valid else "fail",
@@ -328,8 +347,9 @@ def _real_attack_scenarios() -> list[dict]:
                      cover=str(genuine), file=str(tampered),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              f"Signed \"attack-sim: genuine message\" and embedded it into "
-                              f"cover_a.png at offset {start}, depth {lsb}."),
+                              f"Message=\"attack-sim: genuine message\", cover=cover_a.png (48x48), "
+                              f"start_location={start}, lsb_depth={lsb}, signed with the (real) "
+                              f"team keypair generated for this run."),
                          _step("ATTACK", "Attacker's action", "info",
                               "Flips one hidden LSB bit inside the already-embedded payload body "
                               f"(image_stego.make_tampered_image): {_diff_summary(genuine, tampered)}."),
@@ -346,7 +366,9 @@ def _real_attack_scenarios() -> list[dict]:
                      cover=str(genuine), file=str(wrong_key_stego),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              "Same message, same cover, same offset/depth as the genuine file above."),
+                              f"Message=\"attack-sim: wrong signing key\", cover=cover_a.png (48x48), "
+                              f"start_location={start}, lsb_depth={lsb} -- same parameters as the "
+                              f"tampering row, only the signing key differs (see ATTACK below)."),
                          _step("ATTACK", "Attacker's action", "info",
                               "Signs with a DIFFERENT freshly-generated 2048-bit RSA private key "
                               "instead of the team's real key. The verifier still checks against "
@@ -363,7 +385,9 @@ def _real_attack_scenarios() -> list[dict]:
                      cover=str(genuine), file=str(genuine),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              f"Reusing the genuine file above, correctly embedded at offset {start}."),
+                              f"Reusing the genuine file (message=\"attack-sim: genuine message\", "
+                              f"cover=cover_a.png 48x48), which was correctly embedded at "
+                              f"start_location={start}, lsb_depth={lsb}."),
                          _step("ATTACK", "Attacker's action", "info",
                               f"Verifier is told (wrongly, or by an attacker without the real start "
                               f"location) to look for the payload starting at sample offset "
@@ -385,7 +409,9 @@ def _real_attack_scenarios() -> list[dict]:
                      cover=str(genuine), file=str(genuine),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              f"Genuine file, nonce {nonce_preview}... embedded in the payload."),
+                              f"Genuine file (message=\"attack-sim: genuine message\", "
+                              f"cover=cover_a.png 48x48, start_location={start}, lsb_depth={lsb}), "
+                              f"nonce {nonce_preview}... embedded in the payload."),
                          _step("ATTACK", "Attacker's action", "info",
                               "None yet -- this is the legitimate first-ever use of this signed file."),
                      ] + first_steps))
@@ -396,7 +422,9 @@ def _real_attack_scenarios() -> list[dict]:
                      cover=str(genuine), file=str(genuine),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              "Reusing the exact same file from the row above -- byte-for-byte."),
+                              f"Reusing the exact same signed file from the row above -- "
+                              f"byte-for-byte identical (start_location={start}, lsb_depth={lsb}, "
+                              f"nonce {nonce_preview}...)."),
                          _step("ATTACK", "Attacker's action", "info",
                               f"Presents the identical file a second time. Nonce {nonce_preview}... "
                               "was already recorded as seen -- generate_verdict()'s opt-in replay "
@@ -411,17 +439,23 @@ def _real_attack_scenarios() -> list[dict]:
     actual, steps = verify_and_narrate(substituted)
     rows.append(_row("Substitution attempt -- valid payload moved onto a different cover",
                      "Tampered", actual,
-                     note="Pixel diff looks tiny -- the real tell is invisible in pixels: "
-                          "cover_hash inside the payload points to cover_a, not this image.",
+                     note="The zoomed diff below is real and visible -- LSB embedding always "
+                          "touches many samples. But it's not the giveaway: nothing about these "
+                          "pixels reveals the payload was originally signed for a DIFFERENT image "
+                          "(cover_a), not this one (cover_b) -- only cover_hash inside the "
+                          "(unchanged, still validly-signed) payload catches that.",
                      cover=str(cover_b), file=str(substituted),
                      steps=[
                          _step("SETUP", "Protect (sender side)", "info",
-                              "Signed a message and embedded it into cover_a.png (source.png)."),
+                              f"Message=\"attack-sim: substitution source\", cover=cover_a.png "
+                              f"(48x48), start_location={start}, lsb_depth={lsb}, signed with the "
+                              f"real team keypair. cover_b.png below is a SEPARATE, visibly "
+                              f"different 48x48 cover -- never legitimately protected."),
                          _step("ATTACK", "Attacker's action", "info",
                               "Copies the exact signed payload+signature bytes -- unchanged -- and "
-                              "re-embeds them into a completely different, visibly unrelated cover "
-                              "(cover_b.png) at the same offset, hoping a valid signature alone is "
-                              "enough to pass."),
+                              f"re-embeds them into a completely different, visibly unrelated cover "
+                              f"(cover_b.png) at the same start_location={start}, lsb_depth={lsb}, "
+                              "hoping a valid signature alone is enough to pass."),
                      ] + steps))
 
     return rows

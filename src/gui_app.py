@@ -24,6 +24,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import gui_pipeline as pipeline
+import verdict
 from gui_components import (
     BeforeAfterPreview, CaseTable, DataTable, FileField, JsonView,
     MediaPreview, ParamsFrame, StepList, VerdictBanner, open_path, run_async,
@@ -538,6 +539,23 @@ class InnovationTab(ttk.Frame):
                              "expected verdict. Files are written to your OS temp "
                              "directory, never into this project.",
                  wraplength=310, foreground="#555").pack(fill="x", pady=(0, 8))
+
+        params_frame = ttk.LabelFrame(left, text="Embedding parameters used", padding=6)
+        params_frame.pack(fill="x", pady=(0, 8))
+        p = verdict.ATTACK_SIM_PARAMS
+        for row, (label, value) in enumerate((
+                ("Start location:", p["start_location"]),
+                ("LSB depth:", p["lsb_depth"]),
+                ("Cover:", p["cover_size"]),
+                ("Signing key:", p["key_size"]))):
+            ttk.Label(params_frame, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Label(params_frame, text=str(value), foreground="#333").grid(
+                row=row, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(params_frame,
+                 text="Fixed (not user-adjustable) so every scenario below is directly "
+                      "comparable -- each row also restates these in its SETUP step.",
+                 foreground="#555", wraplength=290).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         self.verdict_run_btn = ttk.Button(left, text="▶  Run attack simulation",
                                           command=self.run_verdict_check)
