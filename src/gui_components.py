@@ -54,8 +54,13 @@ STATUS_LABELS = {
     "info": ("i INFO", BLUE), "skip": ("- SKIP", GREY),
 }
 RESULT_COLOURS = {"PASS": GREEN, "FAIL": RED, "BLOCKED": AMBER}
-MEDIA_FILETYPES = [("PNG / WAV", "*.png *.wav"), ("Images", "*.png *.bmp *.jpg *.jpeg"),
-                   ("WAV audio", "*.wav"), ("All files", "*.*")]
+MEDIA_FILETYPES = [
+    ("Media", "*.png *.wav *.avi *.mp4"),
+    ("Images", "*.png *.bmp *.jpg *.jpeg"),
+    ("WAV audio", "*.wav"),
+    ("Video", "*.avi *.mp4 *.mov *.mkv"),
+    ("All files", "*.*"),
+]
 
 
 def _as_dict(obj):
@@ -273,6 +278,8 @@ class MediaPreview(ttk.LabelFrame):
             kind = pipeline.detect_kind(path)
             if kind == "image":
                 self._show_image(path)
+            elif kind == "video":
+                self._show_video_frame(path)
             else:
                 self._show_waveform(path)
             if caption is None:
@@ -292,6 +299,14 @@ class MediaPreview(ttk.LabelFrame):
             im.thumbnail((self.w, self.h))
         self._photo = ImageTk.PhotoImage(im)
         self.canvas.create_image(self.w // 2, self.h // 2, image=self._photo)
+
+    def _show_video_frame(self, path):
+        import video_stego
+        im = video_stego.first_frame_rgb(path)
+        im.thumbnail((self.w, self.h))
+        self._photo = ImageTk.PhotoImage(im)
+        self.canvas.create_image(self.w // 2, self.h // 2, image=self._photo)
+        self.canvas.create_text(6, 6, anchor="nw", fill="#bdbdbd", text="frame 0")
 
     def _show_waveform(self, path):
         env, meta = pipeline.waveform_envelope(path, buckets=self.w)
@@ -330,8 +345,14 @@ class BeforeAfterPreview(ttk.Frame):
         if diff_image:
             self.diff.show(diff_image, caption="Changed pixels, enlarged so they stay visible")
         else:
-            self.diff.clear("Audio: see stats below" if stego and str(stego).endswith(".wav")
-                            else "No comparison")
+            msg = "No comparison"
+            if stego:
+                low = str(stego).lower()
+                if low.endswith((".wav", ".wave")):
+                    msg = "Audio: see stats below"
+                elif low.endswith((".avi", ".mp4", ".mov", ".mkv")):
+                    msg = "Video: first-frame diff when available"
+            self.diff.clear(msg)
         self.stats.configure(text=summary)
 
 
@@ -469,6 +490,8 @@ class ParamsFrame(ttk.LabelFrame):
         self.seed = tk.StringVar(value="")
         self.lsb = tk.IntVar(value=2)
         self.low = tk.BooleanVar(value=False)
+        self.frame_step = tk.IntVar(value=1)
+        self.use_dct = tk.BooleanVar(value=False)
 
         ttk.Radiobutton(self, text="Manual start location", variable=self.mode, value="manual",
                         command=self._sync).grid(row=0, column=0, columnspan=2, sticky="w")
@@ -483,7 +506,8 @@ class ParamsFrame(ttk.LabelFrame):
         self.fr7_note = ttk.Label(self, text="", foreground=AMBER, wraplength=280)
         self.fr7_note.grid(row=4, column=0, columnspan=2, sticky="w")
 
-        ttk.Label(self, text="LSB depth (1-8):").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self.depth_label = ttk.Label(self, text="LSB depth (1-8):")
+        self.depth_label.grid(row=5, column=0, sticky="w", pady=(6, 0))
         lsb_row = ttk.Frame(self)
         lsb_row.grid(row=5, column=1, sticky="w", pady=(6, 0))
         tk.Scale(lsb_row, from_=1, to=8, orient="horizontal", variable=self.lsb, length=120,
@@ -491,8 +515,39 @@ class ParamsFrame(ttk.LabelFrame):
         self.low_check = ttk.Checkbutton(self, text="Audio: low byte only (less distortion)",
                                          variable=self.low)
         self.low_check.grid(row=6, column=0, columnspan=2, sticky="w")
+
+        self.dct_check = ttk.Checkbutton(
+            self,
+            text="Image: use DCT embedding (mid-band 8×8 coeffs)",
+            variable=self.use_dct,
+            command=self._on_dct_toggle,
+        )
+        self.dct_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.dct_note = ttk.Label(
+            self,
+            text="Off = classic LSB. On = Discrete Cosine Transform (optional).",
+            foreground="#555", wraplength=280)
+        self.dct_note.grid(row=8, column=0, columnspan=2, sticky="w")
+
+        self.frame_step_label = ttk.Label(self, text="Video frame step:")
+        self.frame_step_label.grid(row=9, column=0, sticky="w", pady=(6, 0))
+        self.frame_step_box = tk.Spinbox(
+            self, from_=1, to=60, textvariable=self.frame_step, width=8)
+        self.frame_step_box.grid(row=9, column=1, sticky="w", pady=(6, 0))
+        self.frame_step_note = ttk.Label(
+            self,
+            text="1 = every frame; 2 = every 2nd frame (selected-frame embedding).",
+            foreground="#555", wraplength=280)
+        self.frame_step_note.grid(row=10, column=0, columnspan=2, sticky="w")
+
         self._sync()
         self.set_kind(None)
+
+    def _on_dct_toggle(self):
+        if self.use_dct.get():
+            self.depth_label.configure(text="DCT coeff depth (1-8):")
+        else:
+            self.depth_label.configure(text="LSB depth (1-8):")
 
     def _sync(self):
         derive = self.mode.get() == "derive"
@@ -506,14 +561,42 @@ class ParamsFrame(ttk.LabelFrame):
         if kind != "audio":
             self.low.set(False)
 
+        image = kind == "image"
+        self.dct_check.configure(state="normal" if image else "disabled")
+        if not image:
+            self.use_dct.set(False)
+        self._on_dct_toggle()
+
+        video = kind == "video"
+        state = "normal" if video else "disabled"
+        self.frame_step_label.configure(state=state)
+        self.frame_step_box.configure(state=state)
+        self.frame_step_note.configure(
+            text=("1 = every frame; 2 = every 2nd frame (selected-frame embedding)."
+                  if video else "Frame step applies only when the cover is video."))
+        if not video:
+            self.frame_step.set(1)
+
     def get(self) -> dict:
         try:
             start = int(self.start.get())
         except (tk.TclError, ValueError):
             raise ValueError("Start index must be a whole number.")
-        return pipeline.default_params(start_mode=self.mode.get(), start=start,
-                                       seed=self.seed.get(), lsb_depth=int(self.lsb.get()),
-                                       low_byte_only=bool(self.low.get()))
+        try:
+            frame_step = int(self.frame_step.get())
+        except (tk.TclError, ValueError):
+            raise ValueError("Frame step must be a whole number >= 1.")
+        if frame_step < 1:
+            raise ValueError("Frame step must be >= 1.")
+        return pipeline.default_params(
+            start_mode=self.mode.get(),
+            start=start,
+            seed=self.seed.get(),
+            lsb_depth=int(self.lsb.get()),
+            low_byte_only=bool(self.low.get()),
+            frame_step=frame_step,
+            use_dct=bool(self.use_dct.get()),
+        )
 
     def set(self, params: dict):
         self.mode.set(params.get("start_mode", "manual"))
@@ -521,4 +604,7 @@ class ParamsFrame(ttk.LabelFrame):
         self.seed.set(params.get("seed", ""))
         self.lsb.set(int(params.get("lsb_depth", 2)))
         self.low.set(bool(params.get("low_byte_only")))
+        self.frame_step.set(int(params.get("frame_step", 1)))
+        self.use_dct.set(bool(params.get("use_dct")))
+        self._on_dct_toggle()
         self._sync()

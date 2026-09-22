@@ -50,9 +50,11 @@ from PIL import Image, ImageChops, ImageOps
 
 import audio_stego
 import crypto_utils
+import dct_image_stego
 import image_stego
 import start_location
 import verdict
+import video_stego
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRIVATE_KEY = ROOT / "keys" / "private_key.pem"
@@ -61,6 +63,7 @@ EVIDENCE_ROOT = ROOT / "tests" / "evidence"
 
 IMAGE_SUFFIXES = {".png", ".bmp", ".tif", ".tiff", ".jpg", ".jpeg", ".gif"}
 AUDIO_SUFFIXES = {".wav", ".wave"}
+VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv", ".wmv"}
 
 VERDICTS = list(verdict.VERDICTS)
 POSITIVE_VERDICTS = {"Authentic"}
@@ -163,7 +166,11 @@ def detect_kind(path) -> str:
         return "audio"
     if suffix in IMAGE_SUFFIXES:
         return "image"
-    raise ValueError(f"Unsupported file type '{suffix}'. Use PNG (image) or WAV (audio).")
+    if suffix in VIDEO_SUFFIXES:
+        return "video"
+    raise ValueError(
+        f"Unsupported file type '{suffix}'. Use PNG (image), WAV (audio), or AVI/MP4 (video)."
+    )
 
 
 def inspect_media(path) -> tuple[str, dict, list]:
@@ -186,7 +193,7 @@ def inspect_media(path) -> tuple[str, dict, list]:
                             "-- lossy compression destroys the LSB payload.")
         if info["mode"] not in ("RGB", "L", "P"):
             warnings.append(f"Mode {info['mode']}: converted to RGB, alpha is dropped.")
-    else:
+    elif kind == "audio":
         try:
             with wave.open(str(path), "rb") as wf:
                 p = wf.getparams()
@@ -196,6 +203,28 @@ def inspect_media(path) -> tuple[str, dict, list]:
                 "sample_rate": p.framerate, "frames": p.nframes,
                 "duration_s": round(p.nframes / p.framerate, 2) if p.framerate else 0,
                 "cover_size": p.nframes * p.nchannels * p.sampwidth}
+    else:
+        try:
+            frames, fps = video_stego._read_all_frames(path)
+        except Exception as exc:
+            raise ValueError(f"Not a readable video: {exc}") from exc
+        h, w = frames[0].shape[:2]
+        frame_step = 1
+        used = video_stego._frame_indices(len(frames), frame_step)
+        info = {
+            "format": path.suffix.lower().lstrip(".").upper() or "VIDEO",
+            "width": w,
+            "height": h,
+            "n_frames": len(frames),
+            "fps": round(fps, 2),
+            "frame_step": frame_step,
+            "cover_size": len(used) * h * w * 3,
+        }
+        if path.suffix.lower() in {".mp4", ".mov", ".mkv", ".wmv"}:
+            warnings.append(
+                "Lossy video input is decoded then re-saved as lossless AVI stego. "
+                "Do not re-encode the stego with H.264/MP4 -- that destroys LSBs."
+            )
     info["file_bytes"] = path.stat().st_size
     return kind, info, warnings
 
@@ -204,9 +233,13 @@ def describe_media(kind, info) -> str:
     if kind == "image":
         return (f"{info['format']} image, {info['width']}x{info['height']} {info['mode']}, "
                 f"{info['cover_size']:,} colour samples")
-    return (f"WAV audio, {info['channels']} ch, {info['sample_width_bytes'] * 8}-bit, "
-            f"{info['sample_rate']} Hz, {info['duration_s']} s, "
-            f"{info['cover_size']:,} sample bytes")
+    if kind == "audio":
+        return (f"WAV audio, {info['channels']} ch, {info['sample_width_bytes'] * 8}-bit, "
+                f"{info['sample_rate']} Hz, {info['duration_s']} s, "
+                f"{info['cover_size']:,} sample bytes")
+    return (f"Video {info['width']}x{info['height']}, {info['n_frames']} frames @ "
+            f"{info['fps']} fps, {info['cover_size']:,} RGB samples "
+            f"(frame_step={info.get('frame_step', 1)})")
 
 
 def _input_step(result: RunResult, path) -> dict | None:
@@ -217,7 +250,12 @@ def _input_step(result: RunResult, path) -> dict | None:
         result.add(fr, "Load input file", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
         return None
     result.kind = kind
-    fr = "FR1" if kind == "image" else "FR2"
+    if kind == "image":
+        fr = "FR1"
+    elif kind == "audio":
+        fr = "FR2"
+    else:
+        fr = "OPT"
     detail = describe_media(kind, info)
     if warnings:
         detail += "\nWarning: " + "\nWarning: ".join(warnings)
@@ -229,7 +267,7 @@ def _input_step(result: RunResult, path) -> dict | None:
 
 def default_params(**overrides) -> dict:
     params = {"start_mode": "manual", "start": 100, "seed": "", "lsb_depth": 2,
-              "low_byte_only": False}
+              "low_byte_only": False, "frame_step": 1, "use_dct": False}
     params.update(overrides)
     return params
 
@@ -304,16 +342,32 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
     kind = result.kind
     lsb = int(params.get("lsb_depth", 2))
     low = bool(params.get("low_byte_only")) and kind == "audio"
+    use_dct = bool(params.get("use_dct")) and kind == "image"
+    frame_step = max(1, int(params.get("frame_step", 1))) if kind == "video" else 1
+    if kind == "video":
+        # Capacity / start range must match selected-frame sample stream.
+        info["cover_size"] = video_stego.video_cover_size(str(cover), frame_step)
+        info["frame_step"] = frame_step
+    elif use_dct:
+        info["cover_size"] = dct_image_stego.dct_slot_count(str(cover), lsb)
+        info["stego_method"] = "dct"
+    else:
+        info["stego_method"] = "lsb" if kind == "image" else kind
     start = _resolve_start(result, info["cover_size"], params)
     if start is None:
         return result
 
     cover_hash = _cover_hash_for_protect(result, cover, kind, lsb)
 
-    media_id = media_id or f"{'IMG' if kind == 'image' else 'AUD'}-{datetime.now():%Y%m%d%H%M%S}"
+    prefix = {"image": "IMG", "audio": "AUD", "video": "VID"}.get(kind, "MED")
+    media_id = media_id or f"{prefix}-{datetime.now():%Y%m%d%H%M%S}"
     metadata = {"team": "P1-4", "lsb_depth": lsb, "start_mode": params.get("start_mode", "manual")}
     if kind == "audio":
         metadata["low_byte_only"] = low
+    if kind == "video":
+        metadata["frame_step"] = frame_step
+    if kind == "image":
+        metadata["method"] = "dct" if use_dct else "lsb"
     try:
         payload = crypto_utils.build_payload(media_id, kind, cover_hash, message, metadata)
         result.payload = crypto_utils.parse_payload(payload)
@@ -334,21 +388,29 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
         result.add("FR4", "Sign payload", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
         return result
 
-    fr = "FR5" if kind == "image" else "FR6"
+    fr = {"image": "FR5", "audio": "FR6", "video": "OPT"}.get(kind, "OPT")
     needed = crypto_utils.total_embed_size(payload)
-    available = _capacity_bytes(kind, info["cover_size"], start, lsb, low,
-                                info.get("sample_width_bytes", 1))
-    result.stats.update(needed_bytes=needed, available_bytes=available)
+    if use_dct:
+        available = max(0, (info["cover_size"] - start) // 8)
+    else:
+        available = _capacity_bytes(kind, info["cover_size"], start, lsb, low,
+                                    info.get("sample_width_bytes", 1))
+    result.stats.update(needed_bytes=needed, available_bytes=available, use_dct=use_dct)
+    method_note = "DCT mid-band coeffs" if use_dct else f"{lsb} LSB(s)"
     try:
-        if kind == "image":
+        if kind == "image" and use_dct:
+            fits = dct_image_stego.check_capacity(str(cover), needed, lsb, start)
+        elif kind == "image":
             fits = image_stego.check_capacity(str(cover), needed, lsb, start)
-        else:
+        elif kind == "audio":
             fits = audio_stego.check_capacity(str(cover), needed, lsb, start, low)
+        else:
+            fits = video_stego.check_capacity(str(cover), needed, lsb, start, frame_step)
     except Exception as exc:
         result.add(fr, "Capacity check", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
         return result
     usage = f"needs {needed:,} bytes, cover holds ~{available:,} bytes " \
-            f"from start {start} at {lsb} LSB(s)"
+            f"from start {start} using {method_note}"
     if not fits:
         result.add(fr, "Capacity check", STATUS_FAIL, "Payload too large: " + usage)
         result.outcome = "Rejected"
@@ -357,16 +419,25 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
 
     if out_path is None:
         raise ValueError("out_path is required")
-    out_path = Path(out_path).with_suffix(".png" if kind == "image" else ".wav")
+    out_suffix = ".png" if kind == "image" else (".wav" if kind == "audio" else ".avi")
+    out_path = Path(out_path).with_suffix(out_suffix)
     try:
-        if kind == "image":
+        if kind == "image" and use_dct:
+            dct_image_stego.embed_dct_image(str(cover), blob, start, lsb, str(out_path))
+            embed_label = "Embed into image (DCT)"
+        elif kind == "image":
             image_stego.embed_image(str(cover), blob, start, lsb, str(out_path))
-        else:
+            embed_label = "Embed into image (LSB)"
+        elif kind == "audio":
             audio_stego.embed_audio(str(cover), blob, start, lsb, str(out_path), low)
+            embed_label = f"Embed into {kind}"
+        else:
+            video_stego.embed_video(str(cover), blob, start, lsb, str(out_path), frame_step)
+            embed_label = f"Embed into {kind}"
     except Exception as exc:
         result.add(fr, f"Embed into {kind}", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
         return result
-    result.add(fr, f"Embed into {kind}", STATUS_OK, f"stego written to {out_path}")
+    result.add(fr, embed_label, STATUS_OK, f"stego written to {out_path}")
     result.outputs["stego"] = str(out_path)
     result.outcome = "Protected"
     return result
@@ -415,6 +486,13 @@ def verify_core(path, params, public_key_path=DEFAULT_PUBLIC_KEY) -> RunResult:
     ctx["input_ok"], ctx["cover_type"] = True, result.kind
     kind, lsb = result.kind, ctx["lsb_depth"]
     low = bool(params.get("low_byte_only")) and kind == "audio"
+    use_dct = bool(params.get("use_dct")) and kind == "image"
+    frame_step = max(1, int(params.get("frame_step", 1))) if kind == "video" else 1
+    if kind == "video":
+        info["cover_size"] = video_stego.video_cover_size(str(path), frame_step)
+        info["frame_step"] = frame_step
+    elif use_dct:
+        info["cover_size"] = dct_image_stego.dct_slot_count(str(path), lsb)
 
     start = _resolve_start(result, info["cover_size"], params)
     if start is None:
@@ -424,21 +502,31 @@ def verify_core(path, params, public_key_path=DEFAULT_PUBLIC_KEY) -> RunResult:
 
     # FR8: extraction
     try:
-        if kind == "image":
+        if kind == "image" and use_dct:
+            blob = dct_image_stego.extract_dct_image(str(path), start, lsb)
+            extract_label = "Extract hidden blob from image (DCT)"
+        elif kind == "image":
             blob = image_stego.extract_image(str(path), start, lsb)
-        else:
+            extract_label = "Extract hidden blob from image (LSB)"
+        elif kind == "audio":
             blob = audio_stego.extract_audio(str(path), start, lsb, low)
+            extract_label = f"Extract hidden blob from {kind}"
+        else:
+            blob = video_stego.extract_video(str(path), start, lsb, frame_step)
+            extract_label = f"Extract hidden blob from {kind}"
         payload_bytes, signature = crypto_utils.unpack(blob)
         ctx["extraction_successful"] = True
-        result.add("FR8", f"Extract hidden blob from {kind}", STATUS_OK,
+        result.add("FR8" if kind != "video" else "OPT", extract_label, STATUS_OK,
                    f"length header = {len(payload_bytes):,} bytes\n"
                    f"blob = 4 + {len(payload_bytes):,} + {len(signature)} = {len(blob):,} bytes\n"
-                   f"read from start {start} at {lsb} LSB(s)")
+                   f"read from start {start} at depth {lsb}"
+                   + (" (DCT)" if use_dct else ""))
     except Exception as exc:
         ctx["extraction_error"] = f"{type(exc).__name__}: {exc}"
-        result.add("FR8", f"Extract hidden blob from {kind}", STATUS_FAIL,
+        result.add("FR8" if kind != "video" else "OPT", f"Extract hidden blob from {kind}", STATUS_FAIL,
                    ctx["extraction_error"] + "\nLikely causes: no payload in this file, wrong "
-                   "start location, wrong LSB depth / low-byte setting, or a truncated file.")
+                   "start location, wrong LSB/DCT depth, method mismatch (LSB vs DCT), "
+                   "or a truncated file.")
         return _finish_verdict(result, ctx)
 
     ctx["printable_ratio"] = round(_printable_ratio(payload_bytes), 3)
@@ -554,7 +642,7 @@ CASES = [
     Case("pos_large", "Authentic -- large message", "Authentic", "FR3-FR10"),
     Case("pos_custom", "Authentic -- custom message", "Authentic", "FR3-FR10"),
     Case("tamper_payload", "Tampered payload (one hidden bit flipped)", "Signature Invalid",
-         "FR4", description="make_tampered_image/make_tampered_audio on the short stego"),
+         "FR4", description="make_tampered_image/audio/video on the short stego"),
     Case("wrong_key", "Signed with a different private key", "Signature Invalid", "FR4",
          description="temporary keypair; verified with the team public key"),
     Case("media_edit", "Media edited outside the payload", "Tampered", "FR9",
@@ -599,6 +687,15 @@ def _edit_media_outside_payload(src, dst, kind):
                 r, g, b = px[x, y]
                 px[x, y] = (r ^ 0xF0, g ^ 0xF0, b ^ 0xF0)
         im.save(dst, format="PNG")
+    elif kind == "video":
+        frames, fps = video_stego._read_all_frames(src)
+        frame = frames[-1]
+        h, w = frame.shape[:2]
+        patch = frame[max(0, h - 8):h, max(0, w - 8):w, :]
+        patch ^= 0xF0
+        frame[max(0, h - 8):h, max(0, w - 8):w, :] = patch
+        frames[-1] = frame
+        video_stego._write_video(dst, frames, fps)
     else:
         with wave.open(str(src), "rb") as wf:
             p = wf.getparams()
@@ -617,7 +714,7 @@ def run_case_suite(cover, params, messages=None, progress=None) -> dict:
     progress(i, total, text) is called before each case (for a progress bar)."""
     messages = {**MESSAGE_PRESETS, **(messages or {})}
     kind = detect_kind(cover)
-    ext = ".png" if kind == "image" else ".wav"
+    ext = ".png" if kind == "image" else (".wav" if kind == "audio" else ".avi")
     ev = Evidence("cases", kind)
     rows, stegos = [], {}
     total = len(CASES)
@@ -640,8 +737,19 @@ def run_case_suite(cover, params, messages=None, progress=None) -> dict:
                 verify_case(case, stegos[name])
             elif case.id == "too_large":
                 info = inspect_media(cover)[1]
-                cap = _capacity_bytes(kind, info["cover_size"], int(params.get("start", 0)),
-                                      int(params["lsb_depth"]), params.get("low_byte_only"))
+                start0 = int(params.get("start", 0))
+                lsb0 = int(params["lsb_depth"])
+                if kind == "video":
+                    info["cover_size"] = video_stego.video_cover_size(
+                        str(cover), int(params.get("frame_step", 1)))
+                    cap = _capacity_bytes(kind, info["cover_size"], start0, lsb0,
+                                          params.get("low_byte_only"))
+                elif kind == "image" and bool(params.get("use_dct")):
+                    slots = dct_image_stego.dct_slot_count(str(cover), lsb0)
+                    cap = max(0, (slots - start0) // 8)
+                else:
+                    cap = _capacity_bytes(kind, info["cover_size"], start0, lsb0,
+                                          params.get("low_byte_only"))
                 big = "A" * (cap + 1024)
                 res = protect_core(cover, big, params, out_path=ev.dir / "stego_too_large")
                 rows.append(_case_row(case, res, cover, f"message of {len(big):,} chars"))
@@ -656,13 +764,20 @@ def run_case_suite(cover, params, messages=None, progress=None) -> dict:
             elif case.id == "tamper_payload":
                 out = ev.dir / f"tampered_payload{ext}"
                 start = _start_for(stegos["short"], params)
-                if kind == "image":
+                if kind == "image" and bool(params.get("use_dct")):
+                    dct_image_stego.make_tampered_dct_image(
+                        str(stegos["short"]), str(out), start, int(params["lsb_depth"]))
+                elif kind == "image":
                     image_stego.make_tampered_image(str(stegos["short"]), str(out), start,
                                                     int(params["lsb_depth"]))
-                else:
+                elif kind == "audio":
                     audio_stego.make_tampered_audio(str(stegos["short"]), str(out), start,
                                                     int(params["lsb_depth"]),
                                                     bool(params.get("low_byte_only")))
+                else:
+                    video_stego.make_tampered_video(
+                        str(stegos["short"]), str(out), start,
+                        int(params["lsb_depth"]), int(params.get("frame_step", 1)))
                 verify_case(case, out)
             elif case.id == "wrong_key":
                 key_dir = ev.dir / "wrong_key"
@@ -725,6 +840,29 @@ def compare_media(cover, stego, diff_path=None) -> dict:
         stats["summary"] = (f"{changed_pixels:,} of {a.width * a.height:,} pixels changed "
                             f"(max change {stats['max_sample_change']} per channel), "
                             f"PSNR {'inf' if stats['psnr_db'] is None else stats['psnr_db']} dB")
+        if diff_path:
+            stats["diff_image"] = str(_difference_overlay(a, mask, diff_path))
+        return stats
+
+    if kind == "video":
+        a = video_stego.first_frame_rgb(cover)
+        b = video_stego.first_frame_rgb(stego)
+        if a.size != b.size:
+            return {"summary": "Cover and stego frame sizes differ; no comparison."}
+        diff = ImageChops.difference(a, b)
+        hist = diff.histogram()
+        n = a.width * a.height * 3
+        changed_samples = n - sum(hist[c * 256] for c in range(3))
+        r, g, bl = diff.split()
+        mask = ImageChops.lighter(ImageChops.lighter(r, g), bl).point(lambda v: 255 if v else 0)
+        changed_pixels = mask.histogram()[255]
+        stats = {
+            "changed_pixels": changed_pixels,
+            "changed_samples": changed_samples,
+            "summary": (f"First-frame preview: {changed_pixels:,} of "
+                        f"{a.width * a.height:,} pixels differ after embed "
+                        f"({changed_samples:,} RGB samples)."),
+        }
         if diff_path:
             stats["diff_image"] = str(_difference_overlay(a, mask, diff_path))
         return stats
@@ -835,8 +973,12 @@ def fr_status() -> list[dict]:
          "where": "crypto_utils.sign_payload / verify_signature"},
         {"fr": "FR5", "title": "Image embedding", "owner": "Person1", "status": st(image_stego.embed_image),
          "where": "image_stego.embed_image"},
+        {"fr": "OPT", "title": "DCT image embedding (optional)", "owner": "Person1",
+         "status": st(dct_image_stego.embed_dct_image), "where": "dct_image_stego.embed_dct_image"},
         {"fr": "FR6", "title": "Audio embedding", "owner": "Person2", "status": st(audio_stego.embed_audio),
          "where": "audio_stego.embed_audio"},
+        {"fr": "OPT", "title": "Video embedding (optional)", "owner": "Team",
+         "status": st(video_stego.embed_video), "where": "video_stego.embed_video"},
         {"fr": "FR7", "title": "Variable start location", "owner": "Person3",
          "status": st(start_location.derive_start_location),
          "where": "start_location.derive_start_location"},

@@ -1,2 +1,4 @@
 pillow
 pycryptodome
+opencv-python-headless
+numpy

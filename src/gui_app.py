@@ -55,7 +55,7 @@ class ProtectTab(ttk.Frame):
         self.app, self.result = app, None
         left, right = _controls_column(self), _results_column(self)
 
-        self.cover = FileField(left, "Cover file (PNG image or WAV audio)", on_change=self._on_cover)
+        self.cover = FileField(left, "Cover file (PNG image / WAV audio / AVI video)", on_change=self._on_cover)
         self.cover.pack(fill="x")
         self.info = ttk.Label(left, text="", wraplength=310, foreground="#555")
         self.info.pack(fill="x", pady=(2, 6))
@@ -184,7 +184,7 @@ class VerifyTab(ttk.Frame):
         self.app, self.result = app, None
         left, right = _controls_column(self), _results_column(self)
 
-        self.file = FileField(left, "File to verify (PNG / WAV)", on_change=self._on_file)
+        self.file = FileField(left, "File to verify (PNG / WAV / AVI)", on_change=self._on_file)
         self.file.pack(fill="x")
         self.info = ttk.Label(left, text="", wraplength=310, foreground="#555")
         self.info.pack(fill="x", pady=(2, 6))
@@ -275,7 +275,7 @@ class CasesTab(ttk.Frame):
         self.app, self.last = app, None
         left, right = _controls_column(self), _results_column(self)
 
-        self.cover = FileField(left, "Cover file (PNG image or WAV audio)",
+        self.cover = FileField(left, "Cover file (PNG image / WAV audio / AVI video)",
                                initial=pipeline.ROOT / "samples" / "file_example_WAV_1MG.wav",
                                on_change=self._on_cover)
         self.cover.pack(fill="x")

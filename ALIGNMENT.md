@@ -177,6 +177,7 @@ The length header tells the decoder how many payload bytes to read before the si
 - [ ] Person4: exact attack-simulation scenarios.
 - [ ] Confirm primary cover files (`samples/cover_image.png` is Earth Day for now).
 - [ ] Person5: finalize `cover_hash` over stable non-LSB bytes (demo currently hashes original file bytes as a placeholder).
+- [x] Optional video cover: `src/video_stego.py` (frame LSB, same pack/unpack blob; GUI Protect/Verify/Cases accept AVI/MP4).
 
 ---
 
