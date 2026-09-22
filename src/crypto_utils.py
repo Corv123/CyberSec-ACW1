@@ -83,6 +83,40 @@ def compute_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def stable_cover_bytes(path, cover_type: str, lsb_depth: int) -> bytes:
+    """The part of the cover's raw sample data that embedding never touches --
+    used as the input to compute_hash() for cover_hash (FR9), instead of hashing
+    the whole file.
+
+    Masks off the low `lsb_depth` bits of every sample/pixel byte. This gives the
+    SAME result whether called on the pristine cover (protect side, before
+    embedding) or on the resulting stego file (verify side, after embedding),
+    because LSB embedding only ever changes those masked-out bits -- so a
+    legitimate embed never breaks the hash match, but a real edit to the cover
+    (cropping, recompression, swapping the image/audio content) changes high bits
+    too and is caught as "Tampered".
+
+    Wired in automatically by gui_pipeline.py once this function exists --
+    see its _cover_hash_for_protect() and verify_core() (FR9 hook).
+    """
+    if not (1 <= lsb_depth <= 8):
+        raise ValueError("lsb_depth must be between 1 and 8.")
+    mask = (0xFF << lsb_depth) & 0xFF
+
+    if cover_type == "image":
+        from PIL import Image
+        with Image.open(path) as im:
+            raw = im.convert("RGB").tobytes()
+    elif cover_type == "audio":
+        import wave
+        with wave.open(str(path), "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+    else:
+        raise ValueError(f"Unknown cover_type: {cover_type!r} (expected 'image' or 'audio')")
+
+    return bytes(b & mask for b in raw)
+
+
 def verify_hash(data: bytes, expected_hash: str) -> bool:
     return compute_hash(data) == expected_hash
 
