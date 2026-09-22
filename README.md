@@ -30,20 +30,6 @@ Person1 negative sample only (writes tampered PNG):
 python src/image_stego.py --tamper
 ```
 
-Optional video cover (same LSB + crypto blob contract):
-
-```bash
-python src/video_stego.py
-python src/video_stego.py --tamper
-```
-
-Optional DCT image stego (mid-band 8x8 coefficients; alternative to LSB):
-
-```bash
-python src/dct_image_stego.py
-python src/dct_image_stego.py --tamper
-```
-
 Person6 GUI (Tkinter, no extra install):
 
 ```bash
@@ -51,9 +37,7 @@ python src/gui_app.py
 ```
 
 Tabs: **Protect** (FR1-FR7, FR9) · **Verify** (FR8-FR10) · **Test Cases** (FR11, all
-positive + negative cases in one click). On image covers, tick **Image: use DCT
-embedding** to switch from LSB to mid-band DCT (`dct_image_stego.py`). Every run is
-saved to `tests/evidence/<time>_<action>_<media>/` as
+positive + negative cases in one click). Every run is saved to `tests/evidence/<time>_<action>_<media>/` as
 `report.json` (params, steps, SHA-256 of every file, environment, git commit) and
 `summary.md` (paste-ready table). An image test-case run writes ~50 MB of PNGs, so
 commit only the runs you need as evidence.
@@ -130,6 +114,25 @@ make_tampered_image(stego, tampered_out, start_location, lsb_depth)
 
 Indexing: flat RGB sample index. Wire framing owned by `crypto_utils`, not image_stego.
 
+## Person3 API (start location)
+
+```python
+from start_location import derive_start_location, explain_security, bias_demo, describe_bias_demo
+
+start = derive_start_location(cover_size, seed.encode("utf-8"))  # 0 <= start < cover_size, deterministic
+print(explain_security())  # FR13 write-up: PBKDF2-HMAC-SHA256 stretch + rejection sampling
+
+result = bias_demo(upper=7, trials=20_000)  # chi-square evidence: rejection sampling vs naive modulo
+print(describe_bias_demo(result))
+```
+
+`seed` is whatever passphrase the GUI's "Derive from seed (FR7)" field holds (UTF-8
+bytes); `cover_size` is `w*h*3` (image) or `nframes*nchannels*sampwidth` (audio), same
+as everywhere else in the pipeline. Same seed + same cover_size always reproduces the
+same start location -- that's what lets Verify find the payload without the location
+ever being transmitted. See the **Innovation** tab in the GUI for the live version of
+`explain_security()` and `bias_demo()`.
+
 ## Person6 GUI API (for plugging in your FR)
 
 The GUI detects unfinished functions (body is only `raise NotImplementedError`) and
@@ -138,10 +141,10 @@ run -- no GUI change needed.
 
 | Owner | Implement | GUI effect |
 |---|---|---|
-| Person3 | `start_location.derive_start_location(cover_size, seed)` | "Derive from seed (FR7)" option starts working; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
-| Person3 | `start_location.explain_security()` -> `str` | Available via `gui_pipeline.explain_start_location()` (no tab yet) |
+| Person3 | ✅ `start_location.derive_start_location(cover_size, seed)` | "Derive from seed (FR7)" option works; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
+| Person3 | ✅ `start_location.explain_security()` -> `str` | Shown on the **Innovation** tab, alongside a live `bias_demo()` chi-square comparison |
 | Person4 | `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid)` | Replaces the provisional verdict (marked `*`). `hash_valid` may be `None`. Add a `context=None` keyword to also receive extraction error, printable ratio, start location, etc. |
-| Person4 | `verdict.run_attack_simulation()` -> list of dicts or `str` | Available via `gui_pipeline.run_attack_simulation()`; render with `gui_components.DataTable` (no tab yet) |
+| Person4 | `verdict.run_attack_simulation()` -> list of dicts or `str` | Would show on the **Innovation** tab (no widget wired in yet); available now via `gui_pipeline.run_attack_simulation()`, render with `gui_components.DataTable` |
 | Person5 | *(new, optional)* `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); unblocks the "media edited" test case |
 
 Call the pipeline without the GUI:
