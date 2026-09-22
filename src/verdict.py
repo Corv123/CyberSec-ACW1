@@ -37,6 +37,8 @@ because generate_verdict only receives the verification context, not the file pa
 or a callback into image_stego/audio_stego. Flagged as a possible v2 improvement.
 """
 
+import json
+import struct
 import tempfile
 from pathlib import Path
 
@@ -156,9 +158,11 @@ def generate_verdict(extraction_successful: bool, signature_valid: bool, hash_va
         #    check says otherwise.
         return "Authentic"
 
-    except Exception:
-        # Anything unexpected (malformed context, etc.) -- never let verdict
-        # generation itself crash the GUI.
+    except (AttributeError, TypeError):
+        # A malformed context (not a dict, or a nonce_registry without a set's
+        # .add()/`in` interface) surfaces as one of these two -- never let a
+        # bad caller crash verdict generation itself. Anything else (a real
+        # bug in our own logic above) should NOT be swallowed here.
         return "Cannot Verify"
 
 
@@ -278,14 +282,21 @@ def _real_attack_scenarios() -> list[dict]:
             blob = image_stego.extract_image(str(stego_path), at_start, lsb)
             steps.append(_step("FR8", "Extract hidden blob", "ok",
                                f"Read {len(blob):,} bytes starting at sample offset {at_start}."))
-        except Exception as exc:
+        except (image_stego.ImageStegoError, ValueError) as exc:
+            # ImageStegoError covers InvalidImageError/PayloadTooLargeError/
+            # ExtractionError (the module's declared hierarchy); ValueError
+            # covers the lsb_depth/byte_count range checks it also raises
+            # directly, without wrapping them in its own exception type.
             steps.append(_step("FR8", "Extract hidden blob", "fail", f"{type(exc).__name__}: {exc}"))
             v = generate_verdict(False, False, None, context=ctx)
             steps.append(_step("FR10", "Verdict", "info", f"generate_verdict() → {v}"))
             return v, steps
         try:
             payload_bytes, sig = crypto_utils.unpack(blob)
-        except Exception as exc:
+        except struct.error as exc:
+            # unpack() reads the 4-byte length header with struct.unpack --
+            # this is the only way it fails, when blob is shorter than
+            # extract_image should ever actually return it.
             steps.append(_step("FR8", "Unpack blob", "fail", str(exc)))
             v = generate_verdict(True, False, None, context=ctx)
             steps.append(_step("FR10", "Verdict", "info", f"generate_verdict() → {v}"))
@@ -301,7 +312,9 @@ def _real_attack_scenarios() -> list[dict]:
             ctx["nonce"] = payload.get("nonce")
             steps.append(_step("FR3", "Parse payload JSON", "ok",
                                f"message={payload.get('message')!r}, nonce={payload.get('nonce', '')[:12]}..."))
-        except Exception as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # parse_payload() = payload_bytes.decode("utf-8") then json.loads()
+            # -- these are the only two ways it can fail.
             if ctx["printable_ratio"] >= _TEXTLIKE_THRESHOLD:
                 interpretation = ("still mostly text -- a corrupted-but-real payload, not random "
                                   "noise (the signature check below is what actually rejects this one)")
@@ -529,6 +542,18 @@ def run_attack_simulation():
     try:
         rows.extend(_real_attack_scenarios())
     except Exception as exc:
+        # Deliberately broad, unlike the narrower except clauses above: this
+        # one wraps a whole multi-step pipeline across several modules
+        # (RSA keygen, PIL image creation, embed/extract, hashing), each of
+        # which can fail for a different reason (ImportError if a dependency
+        # is missing, OSError writing to the temp dir, image_stego's own
+        # exception types, ValueError from a bad parameter, ...). Narrowing
+        # this to a fixed list would mean an exception type we didn't
+        # anticipate crashes the whole Innovation tab instead of being
+        # reported as one diagnostic row -- the opposite of this function's
+        # job. The narrower except clauses inside _real_attack_scenarios()
+        # above are where the real specificity belongs; this is a top-level
+        # "never crash the caller" boundary, not a substitute for it.
         rows.append({"case": "Real attack simulation (image_stego/crypto_utils)",
                      "expected": "(all scenarios run)", "actual": f"{type(exc).__name__}: {exc}",
                      "result": "FAIL", "note": "environment/dependency issue, see error",
