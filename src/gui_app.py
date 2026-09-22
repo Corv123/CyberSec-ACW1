@@ -48,6 +48,49 @@ def _results_column(parent):
     return frame
 
 
+def _scrollable_results_column(parent):
+    """Same slot as _results_column, but scrollable -- for tabs (like Innovation)
+    whose stacked result panels can run taller than the window. The mouse-wheel
+    handler is bound globally (not just while hovering the bare canvas
+    background) and guarded by winfo_ismapped(), since this column is fully
+    tiled with child widgets (tables, text boxes, buttons) that would otherwise
+    swallow the wheel event before an Enter/Leave-based binding ever fires."""
+    container = ttk.Frame(parent, padding=(4, 8, 8, 8))
+    container.grid(row=0, column=1, sticky="nsew")
+    parent.columnconfigure(1, weight=1)
+    parent.rowconfigure(0, weight=1)
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(0, weight=1)
+
+    canvas = tk.Canvas(container, highlightthickness=0)
+    vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+
+    inner = ttk.Frame(canvas)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _resize_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _resize_inner_width(event):
+        canvas.itemconfig(window_id, width=event.width)
+
+    inner.bind("<Configure>", _resize_scrollregion)
+    canvas.bind("<Configure>", _resize_inner_width)
+
+    def _wheel(event):
+        if canvas.winfo_ismapped():
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind_all("<MouseWheel>", _wheel)
+    canvas.bind_all("<Button-4>", lambda _e: canvas.winfo_ismapped() and canvas.yview_scroll(-3, "units"))
+    canvas.bind_all("<Button-5>", lambda _e: canvas.winfo_ismapped() and canvas.yview_scroll(3, "units"))
+
+    return inner
+
+
 class ProtectTab(ttk.Frame):
     """Cover + message + parameters -> signed stego file."""
 
@@ -393,7 +436,7 @@ class InnovationTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
-        left, right = _controls_column(self), _results_column(self)
+        left, right = _controls_column(self), _scrollable_results_column(self)
 
         ttk.Label(left, text="Start location innovation (FR7 / FR13)",
                  font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 4))
@@ -426,6 +469,26 @@ class InnovationTab(ttk.Frame):
         self.progress = ttk.Progressbar(left, mode="indeterminate")
         self.progress.pack(fill="x")
 
+        ttk.Separator(left, orient="horizontal").pack(fill="x", pady=14)
+
+        ttk.Label(left, text="Verdict logic check (FR10 / FR13)",
+                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(left, text="generate_verdict() drives the six required verdicts from "
+                             "extraction/signature/hash results. This runs REAL attacks "
+                             "(tampering, wrong-key signing, wrong-start-location "
+                             "extraction, replay, substitution) against throwaway cover "
+                             "images generated on the fly -- plus a couple of fast "
+                             "logic-only checks -- and verifies each produces the "
+                             "expected verdict. Files are written to your OS temp "
+                             "directory, never into this project.",
+                 wraplength=310, foreground="#555").pack(fill="x", pady=(0, 8))
+
+        self.verdict_run_btn = ttk.Button(left, text="▶  Run verdict logic check",
+                                          command=self.run_verdict_check)
+        self.verdict_run_btn.pack(fill="x", pady=(0, 2))
+        self.verdict_progress = ttk.Progressbar(left, mode="indeterminate")
+        self.verdict_progress.pack(fill="x")
+
         write_frame = ttk.LabelFrame(right, text="explain_security() -- FR13 write-up",
                                      padding=4)
         write_frame.pack(fill="both")
@@ -442,6 +505,20 @@ class InnovationTab(ttk.Frame):
         self.breakdown = ScrolledText(result_frame, height=8, wrap="word", font=("Menlo", 11))
         self.breakdown.pack(fill="both", expand=True, pady=(6, 0))
         self.breakdown.configure(state="disabled")
+
+        verdict_result_frame = ttk.LabelFrame(right, text="Verdict logic check result",
+                                              padding=4)
+        verdict_result_frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.verdict_banner = VerdictBanner(verdict_result_frame)
+        self.verdict_banner.pack(fill="x")
+        self.verdict_table = CaseTable(verdict_result_frame, on_select=self._on_verdict_row,
+                                       height=8)
+        self.verdict_table.pack(fill="x", expand=True, pady=(6, 0))
+        ttk.Label(verdict_result_frame,
+                 text="Click a scenario above to see the actual before/after files.",
+                 foreground="#555").pack(anchor="w", pady=(2, 4))
+        self.verdict_preview = BeforeAfterPreview(verdict_result_frame, width=200, height=150)
+        self.verdict_preview.pack(fill="x", pady=(2, 0))
 
     def _load_writeup(self):
         status, value = pipeline.explain_start_location()
@@ -492,6 +569,53 @@ class InnovationTab(ttk.Frame):
         self.breakdown.delete("1.0", "end")
         self.breakdown.insert("1.0", text)
         self.breakdown.configure(state="disabled")
+
+    def run_verdict_check(self):
+        self.verdict_run_btn.configure(state="disabled")
+        self.verdict_progress.start(12)
+        self.verdict_banner.show_text("Running…", "", "idle")
+        run_async(self, lambda _p: pipeline.run_attack_simulation(),
+                 self._verdict_done, self._verdict_error)
+
+    def _verdict_done(self, result):
+        self.verdict_run_btn.configure(state="normal")
+        self.verdict_progress.stop()
+        status, rows = result
+        if status != "ok":
+            self._verdict_error(RuntimeError(rows), "")
+            return
+        passed = sum(1 for r in rows if r["result"] == "PASS")
+        all_pass = passed == len(rows)
+        self.verdict_banner.show_text(
+            f"✔  {passed}/{len(rows)} scenarios PASS" if all_pass
+            else f"!  {passed}/{len(rows)} scenarios PASS -- see table below",
+            "Real tampering, wrong-key, wrong-start-location, replay and substitution "
+            "attacks run against throwaway files, plus a couple of fast logic-only checks.",
+            "positive" if all_pass else "warning")
+        self.verdict_table.set_rows(rows)
+        self.verdict_preview.show(summary="Click a scenario above to see its files.")
+
+    def _verdict_error(self, exc, _tb):
+        self.verdict_run_btn.configure(state="normal")
+        self.verdict_progress.stop()
+        self.verdict_banner.show_text("✘  ERROR", f"{type(exc).__name__}: {exc}", "warning")
+
+    def _on_verdict_row(self, row):
+        cover, stego = row.get("cover"), row.get("file")
+        if not (cover and stego and Path(cover).is_file() and Path(stego).is_file()):
+            self.verdict_preview.show(summary=row.get("note", "") or
+                                      "No image for this scenario -- decision-logic check only.")
+            return
+        try:
+            diff_path = Path(stego).with_name(Path(stego).stem + "_diff.png")
+            stats = pipeline.compare_media(cover, stego, diff_path)
+            summary = stats.get("summary", "")
+            note = row.get("note", "")
+            self.verdict_preview.show(cover, stego, stats.get("diff_image"),
+                                      f"{summary}\n{note}" if note else summary)
+        except Exception as exc:
+            self.verdict_preview.show(cover, stego, None,
+                                      f"{row.get('note', '')}\n(comparison unavailable: {exc})")
 
 
 class ACW1App(tk.Tk):
