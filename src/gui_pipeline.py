@@ -813,6 +813,14 @@ def explain_start_location():
     return call_optional(start_location.explain_security)
 
 
+def run_start_location_bias_demo(upper: int = 7, trials: int = 20_000):
+    return call_optional(start_location.bias_demo, upper, trials)
+
+
+def describe_start_location_bias_demo(result: dict) -> str:
+    return start_location.describe_bias_demo(result)
+
+
 # ---------- FR status board ----------
 
 def fr_status() -> list[dict]:

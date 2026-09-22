@@ -21,10 +21,11 @@ as PENDING instead of crashing the GUI.
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 
 import gui_pipeline as pipeline
 from gui_components import (
-    BeforeAfterPreview, CaseTable, FileField, JsonView,
+    BeforeAfterPreview, CaseTable, DataTable, FileField, JsonView,
     MediaPreview, ParamsFrame, StepList, VerdictBanner, open_path, run_async,
 )
 
@@ -386,6 +387,113 @@ class CasesTab(ttk.Frame):
         self.steps.set_steps(row["steps"])
 
 
+class InnovationTab(ttk.Frame):
+    """FR13 -- Person3's start-location innovation write-up + live bias evidence."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        left, right = _controls_column(self), _results_column(self)
+
+        ttk.Label(left, text="Start location innovation (FR7 / FR13)",
+                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(left, text="derive_start_location() stretches the shared seed with "
+                             "PBKDF2-HMAC-SHA256, then reduces it to a start index by "
+                             "rejection sampling instead of naive modulo, to avoid "
+                             "structural bias. The demo below proves that empirically "
+                             "with a chi-square goodness-of-fit test.",
+                 wraplength=310, foreground="#555").pack(fill="x", pady=(0, 8))
+
+        demo = ttk.LabelFrame(left, text="Bias demo: rejection sampling vs naive modulo",
+                              padding=6)
+        demo.pack(fill="x")
+        row = ttk.Frame(demo)
+        row.pack(fill="x")
+        ttk.Label(row, text="Upper bound:").grid(row=0, column=0, sticky="w")
+        self.upper = tk.IntVar(value=7)
+        tk.Spinbox(row, from_=3, to=97, textvariable=self.upper, width=6
+                  ).grid(row=0, column=1, sticky="w", padx=(4, 0))
+        ttk.Label(row, text="Trials:").grid(row=1, column=0, sticky="w")
+        self.trials = tk.IntVar(value=20000)
+        tk.Spinbox(row, from_=1000, to=200000, increment=1000, textvariable=self.trials,
+                  width=8).grid(row=1, column=1, sticky="w", padx=(4, 0))
+        ttk.Label(demo, text="Upper is deliberately awkward (not a power of two, e.g. 7) "
+                             "so naive modulo's bias shows up clearly.",
+                 wraplength=290, foreground="#555").pack(fill="x", pady=(4, 0))
+
+        self.run_btn = ttk.Button(left, text="▶  Run chi-square bias demo", command=self.run)
+        self.run_btn.pack(fill="x", pady=(8, 2))
+        self.progress = ttk.Progressbar(left, mode="indeterminate")
+        self.progress.pack(fill="x")
+
+        write_frame = ttk.LabelFrame(right, text="explain_security() -- FR13 write-up",
+                                     padding=4)
+        write_frame.pack(fill="both")
+        self.writeup = JsonView(write_frame, height=9)
+        self.writeup.pack(fill="both", expand=True)
+        self._load_writeup()
+
+        result_frame = ttk.LabelFrame(right, text="Bias demo result", padding=4)
+        result_frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.banner = VerdictBanner(result_frame)
+        self.banner.pack(fill="x")
+        self.table = DataTable(result_frame, height=8)
+        self.table.pack(fill="both", pady=(6, 0))
+        self.breakdown = ScrolledText(result_frame, height=8, wrap="word", font=("Menlo", 11))
+        self.breakdown.pack(fill="both", expand=True, pady=(6, 0))
+        self.breakdown.configure(state="disabled")
+
+    def _load_writeup(self):
+        status, value = pipeline.explain_start_location()
+        self.writeup.set_data(value if status == "ok" else f"({status.upper()}) {value}")
+
+    def run(self):
+        try:
+            upper = int(self.upper.get())
+            trials = int(self.trials.get())
+        except (tk.TclError, ValueError):
+            messagebox.showwarning("Innovation", "Upper bound and trials must be whole numbers.")
+            return
+        self.run_btn.configure(state="disabled")
+        self.progress.start(12)
+        self.banner.show_text("Running…", "", "idle")
+        run_async(self, lambda _p: pipeline.run_start_location_bias_demo(upper, trials),
+                 self._done, self._error)
+
+    def _done(self, result):
+        self.run_btn.configure(state="normal")
+        self.progress.stop()
+        status, value = result
+        if status != "ok":
+            self._error(RuntimeError(value), "")
+            return
+        rs, nv = value["rejection_sampling"], value["naive_modulo"]
+        as_expected = rs["uniform"] and not nv["uniform"]
+        self.banner.show_text(
+            "✔  Rejection sampling uniform, naive modulo biased -- as expected" if as_expected
+            else "!  See breakdown below",
+            f"chi-square: rejection sampling = {rs['chi_square']}, naive modulo = "
+            f"{nv['chi_square']}  (critical value at 5%: {value['critical_value_5pct']})",
+            "positive" if as_expected else "warning")
+        rows = [{"bucket": i, "rejection sampling": rs["counts"][i],
+                "naive modulo": nv["counts"][i], "expected": value["expected_per_slot"]}
+               for i in range(value["upper"])]
+        self.table.set_rows(rows)
+        self._set_breakdown(pipeline.describe_start_location_bias_demo(value))
+
+    def _error(self, exc, _tb):
+        self.run_btn.configure(state="normal")
+        self.progress.stop()
+        self.banner.show_text("✘  ERROR", f"{type(exc).__name__}: {exc}", "warning")
+        self._set_breakdown("")
+
+    def _set_breakdown(self, text):
+        self.breakdown.configure(state="normal")
+        self.breakdown.delete("1.0", "end")
+        self.breakdown.insert("1.0", text)
+        self.breakdown.configure(state="disabled")
+
+
 class ACW1App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -405,8 +513,10 @@ class ACW1App(tk.Tk):
         self.protect_tab = ProtectTab(self.notebook, self)
         self.verify_tab = VerifyTab(self.notebook, self)
         self.cases_tab = CasesTab(self.notebook, self)
+        self.innovation_tab = InnovationTab(self.notebook, self)
         for tab, text in ((self.protect_tab, "1. Protect"), (self.verify_tab, "2. Verify"),
-                          (self.cases_tab, "3. Test Cases (FR11)")):
+                          (self.cases_tab, "3. Test Cases (FR11)"),
+                          (self.innovation_tab, "4. Innovation (FR13)")):
             self.notebook.add(tab, text=text)
         self._update_summary()
 
