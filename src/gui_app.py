@@ -430,6 +430,62 @@ class CasesTab(ttk.Frame):
         self.steps.set_steps(row["steps"])
 
 
+def _zoomed_attack_comparison(cover_path, stego_path, tmp_dir, pad=6, target=360, max_zoom=24):
+    """Crop cover/stego to the region that actually changed (or the whole
+    image, if nothing did), upscale with NEAREST so individual pixels stay
+    crisp blocks instead of blurring away, and draw a red box around every
+    changed pixel on the diff. Built specifically for the attack-sim's tiny
+    (48x48) throwaway covers, where a single flipped bit is otherwise
+    invisible: MediaPreview's thumbnail() only ever shrinks an image to fit
+    its canvas, never enlarges one, so a 48x48 image renders as a small
+    postage stamp with mostly empty canvas around it. Returns
+    (before_path, after_path, diff_path, changed_count) or None if the two
+    images aren't directly comparable (different sizes, unreadable, ...).
+    """
+    from PIL import Image, ImageDraw
+
+    try:
+        a = Image.open(cover_path).convert("RGB")
+        b = Image.open(stego_path).convert("RGB")
+    except Exception:
+        return None
+    if a.size != b.size:
+        return None
+    w, h = a.size
+    pa, pb = a.load(), b.load()
+    changed = [(x, y) for y in range(h) for x in range(w) if pa[x, y] != pb[x, y]]
+
+    if changed:
+        xs, ys = [p[0] for p in changed], [p[1] for p in changed]
+        x0, x1 = max(0, min(xs) - pad), min(w, max(xs) + pad + 1)
+        y0, y1 = max(0, min(ys) - pad), min(h, max(ys) + pad + 1)
+    else:
+        x0, y0, x1, y1 = 0, 0, w, h
+
+    crop_a, crop_b = a.crop((x0, y0, x1, y1)), b.crop((x0, y0, x1, y1))
+    cw, ch = crop_b.size
+    zoom = max(4, min(max_zoom, target // max(cw, ch, 1)))
+
+    def upscale(im):
+        return im.resize((cw * zoom, ch * zoom), Image.NEAREST)
+
+    before_zoom, after_zoom, diff_zoom = upscale(crop_a), upscale(crop_b), upscale(crop_b)
+    draw = ImageDraw.Draw(diff_zoom)
+    box_w = max(1, zoom // 4)
+    for (x, y) in changed:
+        rx, ry = (x - x0) * zoom, (y - y0) * zoom
+        draw.rectangle([rx, ry, rx + zoom - 1, ry + zoom - 1], outline=(255, 0, 0), width=box_w)
+
+    stem = Path(stego_path).stem
+    before_path = Path(tmp_dir) / f"{stem}_zoom_before.png"
+    after_path = Path(tmp_dir) / f"{stem}_zoom_after.png"
+    diff_path = Path(tmp_dir) / f"{stem}_zoom_diff.png"
+    before_zoom.save(before_path, format="PNG")
+    after_zoom.save(after_path, format="PNG")
+    diff_zoom.save(diff_path, format="PNG")
+    return str(before_path), str(after_path), str(diff_path), len(changed)
+
+
 class InnovationTab(ttk.Frame):
     """FR13 -- Person3's start-location innovation write-up + live bias evidence."""
 
@@ -471,7 +527,7 @@ class InnovationTab(ttk.Frame):
 
         ttk.Separator(left, orient="horizontal").pack(fill="x", pady=14)
 
-        ttk.Label(left, text="Verdict logic check (FR10 / FR13)",
+        ttk.Label(left, text="Attack simulation innovation (FR10 / FR13)",
                  font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 4))
         ttk.Label(left, text="generate_verdict() drives the six required verdicts from "
                              "extraction/signature/hash results. This runs REAL attacks "
@@ -483,7 +539,7 @@ class InnovationTab(ttk.Frame):
                              "directory, never into this project.",
                  wraplength=310, foreground="#555").pack(fill="x", pady=(0, 8))
 
-        self.verdict_run_btn = ttk.Button(left, text="▶  Run verdict logic check",
+        self.verdict_run_btn = ttk.Button(left, text="▶  Run attack simulation",
                                           command=self.run_verdict_check)
         self.verdict_run_btn.pack(fill="x", pady=(0, 2))
         self.verdict_progress = ttk.Progressbar(left, mode="indeterminate")
@@ -506,7 +562,7 @@ class InnovationTab(ttk.Frame):
         self.breakdown.pack(fill="both", expand=True, pady=(6, 0))
         self.breakdown.configure(state="disabled")
 
-        verdict_result_frame = ttk.LabelFrame(right, text="Verdict logic check result",
+        verdict_result_frame = ttk.LabelFrame(right, text="Attack simulation result",
                                               padding=4)
         verdict_result_frame.pack(fill="both", expand=True, pady=(6, 0))
         self.verdict_banner = VerdictBanner(verdict_result_frame)
@@ -515,9 +571,10 @@ class InnovationTab(ttk.Frame):
                                        height=8)
         self.verdict_table.pack(fill="x", expand=True, pady=(6, 0))
         ttk.Label(verdict_result_frame,
-                 text="Click a scenario above to see the actual before/after files.",
+                 text="Click a scenario above -- the region that actually changed is "
+                      "cropped and zoomed in so a single flipped bit is actually visible.",
                  foreground="#555").pack(anchor="w", pady=(2, 4))
-        self.verdict_preview = BeforeAfterPreview(verdict_result_frame, width=200, height=150)
+        self.verdict_preview = BeforeAfterPreview(verdict_result_frame, width=260, height=220)
         self.verdict_preview.pack(fill="x", pady=(2, 0))
 
     def _load_writeup(self):
@@ -606,16 +663,21 @@ class InnovationTab(ttk.Frame):
             self.verdict_preview.show(summary=row.get("note", "") or
                                       "No image for this scenario -- decision-logic check only.")
             return
+        note = row.get("note", "")
         try:
-            diff_path = Path(stego).with_name(Path(stego).stem + "_diff.png")
-            stats = pipeline.compare_media(cover, stego, diff_path)
-            summary = stats.get("summary", "")
-            note = row.get("note", "")
-            self.verdict_preview.show(cover, stego, stats.get("diff_image"),
-                                      f"{summary}\n{note}" if note else summary)
+            result = _zoomed_attack_comparison(cover, stego, Path(stego).parent)
+            if result is None:
+                raise ValueError("images not directly comparable")
+            before_zoom, after_zoom, diff_zoom, changed = result
+            headline = (f"{changed:,} pixel(s) changed in the full image -- cropped and "
+                        f"zoomed to the affected region." if changed
+                        else "0 pixels changed -- same file both times, cropped view shown "
+                             "at native size for reference.")
+            self.verdict_preview.show(before_zoom, after_zoom, diff_zoom,
+                                      f"{headline}\n{note}" if note else headline)
         except Exception as exc:
             self.verdict_preview.show(cover, stego, None,
-                                      f"{row.get('note', '')}\n(comparison unavailable: {exc})")
+                                      f"{note}\n(zoomed comparison unavailable: {exc})")
 
 
 class ACW1App(tk.Tk):
