@@ -568,14 +568,23 @@ class InnovationTab(ttk.Frame):
         self.verdict_banner = VerdictBanner(verdict_result_frame)
         self.verdict_banner.pack(fill="x")
         self.verdict_table = CaseTable(verdict_result_frame, on_select=self._on_verdict_row,
-                                       height=8)
-        self.verdict_table.pack(fill="x", expand=True, pady=(6, 0))
+                                       height=6)
+        self.verdict_table.pack(fill="x", pady=(6, 4))
         ttk.Label(verdict_result_frame,
-                 text="Click a scenario above -- the region that actually changed is "
-                      "cropped and zoomed in so a single flipped bit is actually visible.",
-                 foreground="#555").pack(anchor="w", pady=(2, 4))
-        self.verdict_preview = BeforeAfterPreview(verdict_result_frame, width=260, height=220)
-        self.verdict_preview.pack(fill="x", pady=(2, 0))
+                 text="Click a scenario above to play back exactly what the attacker did and how "
+                      "the pipeline caught it -- the changed region is cropped and zoomed so a "
+                      "single flipped bit is actually visible.",
+                 foreground="#555").pack(anchor="w", pady=(0, 4))
+        verdict_detail = ttk.Frame(verdict_result_frame)
+        verdict_detail.pack(fill="both", expand=True)
+        self.verdict_preview = BeforeAfterPreview(verdict_detail, width=190, height=170)
+        self.verdict_preview.pack(side="left", anchor="n")
+        verdict_steps_frame = ttk.Frame(verdict_detail)
+        verdict_steps_frame.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        ttk.Label(verdict_steps_frame, text="Attack playback",
+                 font=("Helvetica", 10, "bold")).pack(anchor="w")
+        self.verdict_steps = StepList(verdict_steps_frame, height=7)
+        self.verdict_steps.pack(fill="both", expand=True)
 
     def _load_writeup(self):
         status, value = pipeline.explain_start_location()
@@ -651,6 +660,7 @@ class InnovationTab(ttk.Frame):
             "positive" if all_pass else "warning")
         self.verdict_table.set_rows(rows)
         self.verdict_preview.show(summary="Click a scenario above to see its files.")
+        self.verdict_steps.set_steps([])
 
     def _verdict_error(self, exc, _tb):
         self.verdict_run_btn.configure(state="normal")
@@ -658,6 +668,7 @@ class InnovationTab(ttk.Frame):
         self.verdict_banner.show_text("✘  ERROR", f"{type(exc).__name__}: {exc}", "warning")
 
     def _on_verdict_row(self, row):
+        self.verdict_steps.set_steps(row.get("steps", []))
         cover, stego = row.get("cover"), row.get("file")
         if not (cover and stego and Path(cover).is_file() and Path(stego).is_file()):
             self.verdict_preview.show(summary=row.get("note", "") or

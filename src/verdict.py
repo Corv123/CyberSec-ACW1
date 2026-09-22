@@ -178,15 +178,49 @@ def generate_verdict(extraction_successful: bool, signature_valid: bool, hash_va
 # ---------------------------------------------------------------------------
 
 def _row(case: str, expected: str, actual: str, note: str = "",
-         cover: str | None = None, file: str | None = None) -> dict:
+         cover: str | None = None, file: str | None = None,
+         steps: list[dict] | None = None) -> dict:
     """cover / file (optional): paths to the before/after images for this
     scenario, so the GUI can show what the attack actually did, not just the
     verdict it produced. Left unset for scenarios that don't modify a file
     (wrong-start-location, replay) -- the attack there is in how the file is
-    read/reused, not in the file itself."""
+    read/reused, not in the file itself.
+
+    steps (optional): a narrative, in the same {fr, title, status, detail}
+    shape gui_pipeline.RunResult.steps uses -- Setup, Attacker's action,
+    Extract, Parse, Signature check, Hash check, Verdict -- so the GUI can
+    play the attack back step by step with gui_components.StepList, the same
+    widget the Verify and Test Cases tabs already use for real runs."""
     return {"case": case, "expected": expected, "actual": actual,
             "result": "PASS" if actual == expected else "FAIL", "note": note,
-            "cover": cover, "file": file}
+            "cover": cover, "file": file, "steps": steps or []}
+
+
+def _step(fr: str, title: str, status: str, detail: str) -> dict:
+    return {"fr": fr, "title": title, "status": status, "detail": detail}
+
+
+def _diff_summary(path_a, path_b, max_items: int = 4) -> str:
+    """Human-readable description of the first few pixel-level byte changes
+    between two same-sized images -- used to narrate exactly what an attack
+    touched, not just that it touched something."""
+    from PIL import Image
+
+    a, b = Image.open(path_a).convert("RGB"), Image.open(path_b).convert("RGB")
+    if a.size != b.size:
+        return "cover sizes differ, cannot compare pixel-by-pixel"
+    w, h = a.size
+    pa, pb = a.load(), b.load()
+    channels, found = "RGB", []
+    for y in range(h):
+        for x in range(w):
+            if pa[x, y] != pb[x, y]:
+                for c in range(3):
+                    if pa[x, y][c] != pb[x, y][c]:
+                        found.append(f"pixel ({x},{y}) {channels[c]}: {pa[x, y][c]}→{pb[x, y][c]}")
+                if len(found) >= max_items:
+                    return "; ".join(found) + ", ..."
+    return "; ".join(found) if found else "no pixel differences found"
 
 
 def _real_attack_scenarios() -> list[dict]:
@@ -219,22 +253,32 @@ def _real_attack_scenarios() -> list[dict]:
         image_stego.embed_image(str(cover_path), blob, start, lsb, str(out_path))
         return blob
 
-    def decide(stego_path, at_start=start, registry=None):
+    def verify_and_narrate(stego_path, at_start=start, registry=None):
         """Self-contained mirror of gui_pipeline.verify_core's essential
         steps, kept local to avoid a circular import (gui_pipeline already
-        imports this module)."""
+        imports this module). Returns (verdict, steps) -- steps is the
+        FR8→FR3→FR4→FR9→FR10 narrative for this one verify attempt."""
+        steps = []
         ctx = {"input_ok": True, "payload_parsed": False, "printable_ratio": 0.0,
                "nonce": None, "nonce_registry": registry}
         try:
             blob = image_stego.extract_image(str(stego_path), at_start, lsb)
-        except Exception:
-            return generate_verdict(False, False, None, context=ctx)
+            steps.append(_step("FR8", "Extract hidden blob", "ok",
+                               f"Read {len(blob):,} bytes starting at sample offset {at_start}."))
+        except Exception as exc:
+            steps.append(_step("FR8", "Extract hidden blob", "fail", f"{type(exc).__name__}: {exc}"))
+            v = generate_verdict(False, False, None, context=ctx)
+            steps.append(_step("FR10", "Verdict", "info", f"generate_verdict() → {v}"))
+            return v, steps
         try:
             payload_bytes, sig = crypto_utils.unpack(blob)
-        except Exception:
-            return generate_verdict(True, False, None, context=ctx)
+        except Exception as exc:
+            steps.append(_step("FR8", "Unpack blob", "fail", str(exc)))
+            v = generate_verdict(True, False, None, context=ctx)
+            steps.append(_step("FR10", "Verdict", "info", f"generate_verdict() → {v}"))
+            return v, steps
 
-        printable = sum(1 for b in payload_bytes if 32 <= b < 127 or b in (9, 10, 13))
+        printable = sum(1 for byte in payload_bytes if 32 <= byte < 127 or byte in (9, 10, 13))
         ctx["printable_ratio"] = printable / max(1, len(payload_bytes))
 
         payload = None
@@ -242,16 +286,34 @@ def _real_attack_scenarios() -> list[dict]:
             payload = crypto_utils.parse_payload(payload_bytes)
             ctx["payload_parsed"] = True
             ctx["nonce"] = payload.get("nonce")
-        except Exception:
-            pass
+            steps.append(_step("FR3", "Parse payload JSON", "ok",
+                               f"message={payload.get('message')!r}, nonce={payload.get('nonce', '')[:12]}..."))
+        except Exception as exc:
+            steps.append(_step("FR3", "Parse payload JSON", "fail",
+                               f"{type(exc).__name__}: {exc} ({ctx['printable_ratio']:.0%} printable bytes -- "
+                               "looks like noise, not a corrupted-but-real payload)"))
 
         sig_valid = crypto_utils.verify_signature(payload_bytes, sig, pub)
+        steps.append(_step("FR4", "Verify RSA signature", "ok" if sig_valid else "fail",
+                           "Signature matches the payload and public key." if sig_valid
+                           else "Signature does NOT match -- payload altered after signing, "
+                                "or signed with a different key."))
+
         hash_valid = None
         if ctx["payload_parsed"]:
             actual_hash = crypto_utils.compute_hash(
                 crypto_utils.stable_cover_bytes(str(stego_path), "image", lsb))
             hash_valid = (actual_hash == payload.get("cover_hash"))
-        return generate_verdict(True, sig_valid, hash_valid, context=ctx)
+            steps.append(_step("FR9", "Check cover hash", "ok" if hash_valid else "fail",
+                               "Cover matches the signed hash." if hash_valid
+                               else "Cover content does not match the signed cover_hash -- "
+                                    "wrong image, or edited after signing."))
+        else:
+            steps.append(_step("FR9", "Check cover hash", "skip", "No parsed payload to check it against."))
+
+        v = generate_verdict(True, sig_valid, hash_valid, context=ctx)
+        steps.append(_step("FR10", "Verdict", "info", f"generate_verdict() → {v}"))
+        return v, steps
 
     # 1. Tampering / payload corruption -- flip one hidden bit inside the
     #    payload body of an otherwise genuine stego file.
@@ -259,62 +321,108 @@ def _real_attack_scenarios() -> list[dict]:
     protect(cover_a, genuine, "attack-sim: genuine message")
     tampered = tmp / "tampered.png"
     image_stego.make_tampered_image(str(genuine), str(tampered), start, lsb)
+    actual, steps = verify_and_narrate(tampered)
     rows.append(_row("Tampering / payload corruption -- 1 hidden bit flipped",
-                     "Signature Invalid", decide(tampered),
+                     "Signature Invalid", actual,
                      note="Diff highlights the single flipped bit inside the payload region.",
-                     cover=str(genuine), file=str(tampered)))
+                     cover=str(genuine), file=str(tampered),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              f"Signed \"attack-sim: genuine message\" and embedded it into "
+                              f"cover_a.png at offset {start}, depth {lsb}."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              "Flips one hidden LSB bit inside the already-embedded payload body "
+                              f"(image_stego.make_tampered_image): {_diff_summary(genuine, tampered)}."),
+                     ] + steps))
 
     # 2. Wrong-key verification -- signed with a DIFFERENT private key than
-    #    the one being verified against. The diff shows exactly where the
-    #    signature lives: the JSON payload text is identical, only the
-    #    trailing ~256-byte signature region differs.
+    #    the one being verified against.
     wrong_key_stego = tmp / "wrong_key.png"
     protect(cover_a, wrong_key_stego, "attack-sim: wrong signing key", signer=wrong_priv)
+    actual, steps = verify_and_narrate(wrong_key_stego)
     rows.append(_row("Wrong-key verification -- signed with a different private key",
-                     "Signature Invalid", decide(wrong_key_stego),
+                     "Signature Invalid", actual,
                      note="Diff shows only the signature region changing -- same message, different key.",
-                     cover=str(genuine), file=str(wrong_key_stego)))
+                     cover=str(genuine), file=str(wrong_key_stego),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              "Same message, same cover, same offset/depth as the genuine file above."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              "Signs with a DIFFERENT freshly-generated 2048-bit RSA private key "
+                              "instead of the team's real key. The verifier still checks against "
+                              "the team's real public key, which this key was never paired with."),
+                     ] + steps))
 
     # 3. Wrong-start-location extraction -- correct file, wrong offset. No
     #    file is modified here; the attack is in how it's read.
+    actual, steps = verify_and_narrate(genuine, at_start=start + 1)
     rows.append(_row("Wrong-start-location extraction (start+1)",
-                     "Wrong Start Location", decide(genuine, at_start=start + 1),
+                     "Wrong Start Location", actual,
                      note="Same file both times -- the attack is reading from offset "
                           f"{start + 1} instead of {start}, not a file change.",
-                     cover=str(genuine), file=str(genuine)))
+                     cover=str(genuine), file=str(genuine),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              f"Reusing the genuine file above, correctly embedded at offset {start}."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              f"Verifier is told (wrongly, or by an attacker without the real start "
+                              f"location) to look for the payload starting at sample offset "
+                              f"{start + 1} -- off by exactly one sample from the correct {start}."),
+                     ] + steps))
 
     # 4. Replay attempt -- the SAME genuinely-signed file, verified twice.
     #    Own throwaway in-memory registry -- never touches the live app's
     #    default path (see generate_verdict's context docstring).
+    genuine_blob = image_stego.extract_image(str(genuine), start, lsb)
+    genuine_payload = crypto_utils.parse_payload(crypto_utils.unpack(genuine_blob)[0])
+    nonce_preview = genuine_payload.get("nonce", "")[:12]
     registry = set()
-    first = decide(genuine, registry=registry)
-    second = decide(genuine, registry=registry)
+    first, first_steps = verify_and_narrate(genuine, registry=registry)
+    second, second_steps = verify_and_narrate(genuine, registry=registry)
     rows.append(_row("Replay attempt -- first use of a signed file",
                      "Authentic", first,
                      note="Same bytes as the row below -- only the second use is rejected.",
-                     cover=str(genuine), file=str(genuine)))
+                     cover=str(genuine), file=str(genuine),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              f"Genuine file, nonce {nonce_preview}... embedded in the payload."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              "None yet -- this is the legitimate first-ever use of this signed file."),
+                     ] + first_steps))
     rows.append(_row("Replay attempt -- SAME signed file reused",
                      "Tampered", second,
                      note="Only rejected because this simulation opts in to nonce_registry; "
                           "the live app does not do this by default.",
-                     cover=str(genuine), file=str(genuine)))
+                     cover=str(genuine), file=str(genuine),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              "Reusing the exact same file from the row above -- byte-for-byte."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              f"Presents the identical file a second time. Nonce {nonce_preview}... "
+                              "was already recorded as seen -- generate_verdict()'s opt-in replay "
+                              "guard catches the reuse and downgrades the verdict."),
+                     ] + second_steps))
 
     # 5. Substitution attempt -- a validly-signed payload+signature lifted
-    #    verbatim off one cover and re-embedded onto a DIFFERENT cover. The
-    #    diff below (cover_b vs substituted) only shows the small LSB region
-    #    the attacker touched -- it does NOT show the actual problem, which
-    #    is that the signed cover_hash inside those unchanged payload bytes
-    #    points to cover_a, not cover_b. That's deliberate: it's exactly why
-    #    a naive "does the image look edited?" check would miss this attack,
-    #    and why FR9's cover-hash binding is the part that actually catches it.
+    #    verbatim off one cover and re-embedded onto a DIFFERENT cover.
     blob = protect(cover_a, tmp / "source.png", "attack-sim: substitution source")
     substituted = tmp / "substituted.png"
     image_stego.embed_image(str(cover_b), blob, start, lsb, str(substituted))
+    actual, steps = verify_and_narrate(substituted)
     rows.append(_row("Substitution attempt -- valid payload moved onto a different cover",
-                     "Tampered", decide(substituted),
+                     "Tampered", actual,
                      note="Pixel diff looks tiny -- the real tell is invisible in pixels: "
                           "cover_hash inside the payload points to cover_a, not this image.",
-                     cover=str(cover_b), file=str(substituted)))
+                     cover=str(cover_b), file=str(substituted),
+                     steps=[
+                         _step("SETUP", "Protect (sender side)", "info",
+                              "Signed a message and embedded it into cover_a.png (source.png)."),
+                         _step("ATTACK", "Attacker's action", "info",
+                              "Copies the exact signed payload+signature bytes -- unchanged -- and "
+                              "re-embeds them into a completely different, visibly unrelated cover "
+                              "(cover_b.png) at the same offset, hoping a valid signature alone is "
+                              "enough to pass."),
+                     ] + steps))
 
     return rows
 
@@ -357,7 +465,13 @@ def _synthetic_scenarios() -> list[dict]:
             s["extraction_successful"], s["signature_valid"], s["hash_valid"],
             context=s["context"],
         )
-        rows.append(_row(s["case"], s["expected"], actual))
+        steps = [
+            _step("SETUP", "Synthetic inputs (no real file)", "info",
+                 f"extraction_successful={s['extraction_successful']}, "
+                 f"signature_valid={s['signature_valid']}, hash_valid={s['hash_valid']}"),
+            _step("FR10", "Verdict", "info", f"generate_verdict() → {actual}"),
+        ]
+        rows.append(_row(s["case"], s["expected"], actual, steps=steps))
     return rows
 
 
