@@ -176,7 +176,7 @@ The length header tells the decoder how many payload bytes to read before the si
 - [ ] Person3: exact start-location method and seed/key source.
 - [ ] Person4: exact attack-simulation scenarios.
 - [ ] Confirm primary cover files (`samples/cover_image.png` is Earth Day for now).
-- [ ] Person5: finalize `cover_hash` over stable non-LSB bytes (demo currently hashes original file bytes as a placeholder).
+- [x] Person5: `cover_hash` over stable non-LSB bytes via `crypto_utils.stable_cover_bytes()` (image / audio / video). DCT mode skips FR9 match (spatial rewrite).
 - [x] Optional video cover: `src/video_stego.py` (frame LSB, same pack/unpack blob; GUI Protect/Verify/Cases accept AVI/MP4).
 
 ---

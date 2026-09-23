@@ -111,8 +111,19 @@ def stable_cover_bytes(path, cover_type: str, lsb_depth: int) -> bytes:
         import wave
         with wave.open(str(path), "rb") as wf:
             raw = wf.readframes(wf.getnframes())
+    elif cover_type == "video":
+        # Flatten every frame's RGB bytes (same order as video_stego embedding).
+        import video_stego
+        frames, _ = video_stego._read_all_frames(path)
+        chunks = []
+        for frame in frames:
+            rgb = frame[:, :, ::-1]  # BGR -> RGB
+            chunks.append(rgb.tobytes())
+        raw = b"".join(chunks)
     else:
-        raise ValueError(f"Unknown cover_type: {cover_type!r} (expected 'image' or 'audio')")
+        raise ValueError(
+            f"Unknown cover_type: {cover_type!r} (expected 'image', 'audio', or 'video')"
+        )
 
     return bytes(b & mask for b in raw)
 

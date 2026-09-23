@@ -305,7 +305,18 @@ def _resolve_start(result: RunResult, cover_size: int, params: dict) -> int | No
 
 # ---------- FR9 helpers ----------
 
-def _cover_hash_for_protect(result: RunResult, cover, kind, lsb_depth) -> str:
+def _cover_hash_for_protect(result: RunResult, cover, kind, lsb_depth,
+                            use_dct: bool = False) -> str:
+    # DCT mid-band embedding rewrites spatial pixels, so the LSB-plane stable
+    # mask used for FR9 does not stay constant. Store a pre-embed file digest
+    # for audit only; verify skips the FR9 match when method=dct.
+    if use_dct:
+        digest = crypto_utils.compute_hash(Path(cover).read_bytes())
+        result.add("FR9", "Hash cover (DCT mode)", STATUS_SKIP,
+                   "DCT mid-band embedding changes spatial samples; LSB-plane stable "
+                   "hash does not apply. cover_hash is a pre-embed file digest for "
+                   f"audit only.\ncover_hash = {digest}")
+        return digest
     hook = _stable_bytes_hook()
     if hook is not None:
         try:
@@ -357,7 +368,7 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
     if start is None:
         return result
 
-    cover_hash = _cover_hash_for_protect(result, cover, kind, lsb)
+    cover_hash = _cover_hash_for_protect(result, cover, kind, lsb, use_dct=use_dct)
 
     prefix = {"image": "IMG", "audio": "AUD", "video": "VID"}.get(kind, "MED")
     media_id = media_id or f"{prefix}-{datetime.now():%Y%m%d%H%M%S}"
@@ -552,6 +563,14 @@ def verify_core(path, params, public_key_path=DEFAULT_PUBLIC_KEY) -> RunResult:
                          "private key.") + f"\nkey: {public_key_path}")
     except Exception as exc:
         result.add("FR4", "Verify RSA signature", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
+
+    method = ((result.payload or {}).get("metadata") or {}).get("method")
+    if method == "dct" or use_dct:
+        result.add("FR9", "Check cover hash", STATUS_SKIP,
+                   "DCT embedding changes spatial samples; FR9 LSB-plane stable hash "
+                   "does not apply. Authenticity rests on FR4 signature.")
+        ctx["hash_valid"] = None
+        return _finish_verdict(result, ctx)
 
     hook = _stable_bytes_hook()
     expected = (result.payload or {}).get("cover_hash") if ctx["payload_parsed"] else None

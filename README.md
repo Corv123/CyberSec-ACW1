@@ -37,10 +37,27 @@ python src/gui_app.py
 ```
 
 Tabs: **Protect** (FR1-FR7, FR9) · **Verify** (FR8-FR10) · **Test Cases** (FR11, all
-positive + negative cases in one click). Every run is saved to `tests/evidence/<time>_<action>_<media>/` as
+positive + negative cases in one click) · **Innovation** (FR13). Every run is saved to
+`tests/evidence/<time>_<action>_<media>/` as
 `report.json` (params, steps, SHA-256 of every file, environment, git commit) and
 `summary.md` (paste-ready table). An image test-case run writes ~50 MB of PNGs, so
 commit only the runs you need as evidence.
+
+### How FRs connect (end-to-end)
+
+`gui_pipeline.protect_core` / `verify_core` wire every FR into one path:
+
+1. **FR1/FR2** (+ video OPT) — detect cover kind and size  
+2. **FR7** — resolve start (`manual` or `derive_start_location`)  
+3. **FR9** — hash stable non-LSB cover bytes (`stable_cover_bytes`; skipped for DCT)  
+4. **FR3/FR4** — build JSON payload + RSA-2048 sign → pack `4|N|256` blob  
+5. **FR5/FR6** (+ DCT/video OPT) — capacity check + embed  
+6. **FR8** — extract blob on verify  
+7. **FR4/FR9/FR10** — verify signature, re-check cover hash, `generate_verdict`  
+8. **FR11/FR12** — Cases tab + evidence folders  
+9. **FR13** — Innovation tab / `run_attack_simulation`
+
+Smoke: `python tests/_integration_smoke.py`
 
 ## Structure
 
