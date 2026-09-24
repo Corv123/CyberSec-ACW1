@@ -1,0 +1,132 @@
+{
+  "action": "protect",
+  "kind": "image",
+  "steps": [
+    {
+      "fr": "FR1",
+      "title": "Load image input",
+      "status": "ok",
+      "detail": "PNG image, 4000x4000 RGB, 48,000,000 colour samples"
+    },
+    {
+      "fr": "FR7",
+      "title": "Start location",
+      "status": "info",
+      "detail": "Manual start location 100 (seed-derived mode not selected)."
+    },
+    {
+      "fr": "FR9",
+      "title": "Hash cover (DCT mode)",
+      "status": "skip",
+      "detail": "DCT mid-band embedding changes spatial samples; LSB-plane stable hash does not apply. cover_hash is a pre-embed file digest for audit only.\ncover_hash = 9d4d84caeb27cc6b23e17c4dceae23f58762d8070377def3fbbbfcb3eac1e0bb"
+    },
+    {
+      "fr": "FR3",
+      "title": "Build payload",
+      "status": "ok",
+      "detail": "390 bytes JSON, media_id=IMG-20260923185837, nonce=d7263fb9b9536d7e276f64c126e94b27"
+    },
+    {
+      "fr": "FR4",
+      "title": "Sign payload (RSA-2048, PKCS#1 v1.5)",
+      "status": "ok",
+      "detail": "key: C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\keys\\private_key.pem\nsignature: 9ae1594ae9ce4639901c63b1a1dfc04dde20da675ba50f93..."
+    },
+    {
+      "fr": "FR5",
+      "title": "Capacity check",
+      "status": "ok",
+      "detail": "needs 650 bytes, cover holds ~187,487 bytes from start 100 using DCT mid-band coeffs"
+    },
+    {
+      "fr": "FR5",
+      "title": "Embed into image (DCT)",
+      "status": "ok",
+      "detail": "stego written to C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\tests\\evidence\\20260923-185837_protect_image\\stego.png"
+    },
+    {
+      "fr": "FR11",
+      "title": "Before/after comparison",
+      "status": "info",
+      "detail": "45,034 of 16,000,000 pixels changed (max change 4 per channel), PSNR 72.2 dB"
+    }
+  ],
+  "outcome": "Protected",
+  "provisional": false,
+  "params": {
+    "start_mode": "manual",
+    "start": 100,
+    "seed": "",
+    "lsb_depth": 2,
+    "low_byte_only": false,
+    "frame_step": 1,
+    "use_dct": true,
+    "start_location": 100
+  },
+  "payload": {
+    "media_id": "IMG-20260923185837",
+    "timestamp": "2026-09-23T10:58:37.487413+00:00",
+    "cover_type": "image",
+    "cover_hash": "9d4d84caeb27cc6b23e17c4dceae23f58762d8070377def3fbbbfcb3eac1e0bb",
+    "nonce": "d7263fb9b9536d7e276f64c126e94b27",
+    "message": "Short test message -- replace with the Learning Outcome chosen by the team.",
+    "metadata": {
+      "team": "P1-4",
+      "lsb_depth": 2,
+      "start_mode": "manual",
+      "method": "dct"
+    }
+  },
+  "outputs": {
+    "stego": {
+      "path": "tests\\evidence\\20260923-185837_protect_image\\stego.png",
+      "sha256": "191b3cf72e2741c013aef17f18d80cf5bfc13e291c43dd8cacaf51817fa5b248",
+      "bytes": 6683627
+    },
+    "difference": {
+      "path": "tests\\evidence\\20260923-185837_protect_image\\difference.png",
+      "sha256": "9d3c2ed03068921c9f96e419659706902b0ac9e14a3206bc2424b6e9859df72b",
+      "bytes": 51866
+    }
+  },
+  "stats": {
+    "needed_bytes": 650,
+    "available_bytes": 187487,
+    "use_dct": true,
+    "changed_pixels": 45034,
+    "changed_samples": 80368,
+    "max_sample_change": 4,
+    "psnr_db": 72.2,
+    "change_bbox": [
+      0,
+      0,
+      4000,
+      16
+    ],
+    "summary": "45,034 of 16,000,000 pixels changed (max change 4 per channel), PSNR 72.2 dB",
+    "diff_image": "C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\tests\\evidence\\20260923-185837_protect_image\\difference.png"
+  },
+  "evidence_dir": "C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\tests\\evidence\\20260923-185837_protect_image",
+  "polarity": "positive",
+  "inputs": {
+    "cover": {
+      "path": "samples\\cover_image.png",
+      "sha256": "9d4d84caeb27cc6b23e17c4dceae23f58762d8070377def3fbbbfcb3eac1e0bb",
+      "bytes": 6601433
+    },
+    "private_key": {
+      "path": "keys\\private_key.pem",
+      "sha256": "276baa6a37336e49e50a99f6ad6b1003f3e458d04f968b175a8435f275816a15",
+      "bytes": 1674
+    }
+  },
+  "environment": {
+    "python": "3.13.15",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "pillow": "12.3.0",
+    "pycryptodome": "3.23.0",
+    "git_commit": "72f74e3",
+    "generated": "2026-09-23T18:58:42"
+  },
+  "message": "Short test message -- replace with the Learning Outcome chosen by the team."
+}
