@@ -96,6 +96,10 @@ def stable_cover_bytes(path, cover_type: str, lsb_depth: int) -> bytes:
     (cropping, recompression, swapping the image/audio content) changes high bits
     too and is caught as "Tampered".
 
+    For video, prefer hash_stable_cover() -- it streams frame-by-frame and avoids
+    building a multi-hundred-MB buffer. This function still works but materialises
+    the full masked RGB stream in memory.
+
     Wired in automatically by gui_pipeline.py once this function exists --
     see its _cover_hash_for_protect() and verify_core() (FR9 hook).
     """
@@ -105,27 +109,38 @@ def stable_cover_bytes(path, cover_type: str, lsb_depth: int) -> bytes:
 
     if cover_type == "image":
         from PIL import Image
+        import numpy as np
         with Image.open(path) as im:
-            raw = im.convert("RGB").tobytes()
-    elif cover_type == "audio":
+            arr = np.asarray(im.convert("RGB"), dtype=np.uint8)
+        return (arr & np.uint8(mask)).tobytes()
+    if cover_type == "audio":
         import wave
+        import numpy as np
         with wave.open(str(path), "rb") as wf:
             raw = wf.readframes(wf.getnframes())
-    elif cover_type == "video":
-        # Flatten every frame's RGB bytes (same order as video_stego embedding).
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        return (arr & np.uint8(mask)).tobytes()
+    if cover_type == "video":
+        import numpy as np
         import video_stego
-        frames, _ = video_stego._read_all_frames(path)
-        chunks = []
-        for frame in frames:
-            rgb = frame[:, :, ::-1]  # BGR -> RGB
-            chunks.append(rgb.tobytes())
-        raw = b"".join(chunks)
-    else:
-        raise ValueError(
-            f"Unknown cover_type: {cover_type!r} (expected 'image', 'audio', or 'video')"
-        )
+        parts = [plane.ravel() for plane in video_stego.iter_stable_rgb_frames(path, lsb_depth)]
+        if not parts:
+            return b""
+        return np.concatenate(parts).tobytes()
+    raise ValueError(
+        f"Unknown cover_type: {cover_type!r} (expected 'image', 'audio', or 'video')"
+    )
 
-    return bytes(b & mask for b in raw)
+
+def hash_stable_cover(path, cover_type: str, lsb_depth: int) -> str:
+    """SHA-256 hex of stable_cover_bytes, streaming for video so large AVIs stay fast."""
+    if cover_type != "video":
+        return compute_hash(stable_cover_bytes(path, cover_type, lsb_depth))
+    import video_stego
+    h = hashlib.sha256()
+    for plane in video_stego.iter_stable_rgb_frames(path, lsb_depth):
+        h.update(plane.tobytes())
+    return h.hexdigest()
 
 
 def verify_hash(data: bytes, expected_hash: str) -> bool:

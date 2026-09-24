@@ -305,6 +305,17 @@ def _resolve_start(result: RunResult, cover_size: int, params: dict) -> int | No
 
 # ---------- FR9 helpers ----------
 
+def _hash_stable_cover(cover, kind, lsb_depth) -> str:
+    """FR9 digest; uses streaming hash_stable_cover for large video covers."""
+    fn = getattr(crypto_utils, "hash_stable_cover", None)
+    if fn is not None:
+        return fn(str(cover), kind, lsb_depth)
+    hook = _stable_bytes_hook()
+    if hook is None:
+        raise NotImplementedError("stable_cover_bytes / hash_stable_cover missing")
+    return crypto_utils.compute_hash(hook(str(cover), kind, lsb_depth))
+
+
 def _cover_hash_for_protect(result: RunResult, cover, kind, lsb_depth,
                             use_dct: bool = False) -> str:
     # DCT mid-band embedding rewrites spatial pixels, so the LSB-plane stable
@@ -317,10 +328,9 @@ def _cover_hash_for_protect(result: RunResult, cover, kind, lsb_depth,
                    "hash does not apply. cover_hash is a pre-embed file digest for "
                    f"audit only.\ncover_hash = {digest}")
         return digest
-    hook = _stable_bytes_hook()
-    if hook is not None:
+    if _stable_bytes_hook() is not None or hasattr(crypto_utils, "hash_stable_cover"):
         try:
-            digest = crypto_utils.compute_hash(hook(str(cover), kind, lsb_depth))
+            digest = _hash_stable_cover(cover, kind, lsb_depth)
             result.add("FR9", "Hash stable part of cover", STATUS_OK, f"cover_hash = {digest}")
             return digest
         except NotImplementedError:
@@ -572,17 +582,17 @@ def verify_core(path, params, public_key_path=DEFAULT_PUBLIC_KEY) -> RunResult:
         ctx["hash_valid"] = None
         return _finish_verdict(result, ctx)
 
-    hook = _stable_bytes_hook()
     expected = (result.payload or {}).get("cover_hash") if ctx["payload_parsed"] else None
     if expected is None:
         result.add("FR9", "Check cover hash", STATUS_SKIP, "No cover_hash available.")
-    elif hook is None:
+    elif _stable_bytes_hook() is None and not hasattr(crypto_utils, "hash_stable_cover"):
         result.add("FR9", "Check cover hash", STATUS_PENDING,
                    "crypto_utils.stable_cover_bytes() not implemented yet (Person5). "
                    "Edits to the media outside the payload are not detected.")
     else:
         try:
-            ctx["hash_valid"] = crypto_utils.verify_hash(hook(str(path), kind, lsb), expected)
+            digest = _hash_stable_cover(path, kind, lsb)
+            ctx["hash_valid"] = digest == expected
             result.add("FR9", "Check cover hash", STATUS_OK if ctx["hash_valid"] else STATUS_FAIL,
                        "Cover matches the signed hash." if ctx["hash_valid"]
                        else "Cover content differs from the signed cover_hash.")
