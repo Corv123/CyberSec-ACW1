@@ -1,0 +1,112 @@
+{
+  "action": "verify",
+  "kind": "image",
+  "steps": [
+    {
+      "fr": "FR1",
+      "title": "Load image input",
+      "status": "ok",
+      "detail": "PNG image, 4000x4000 RGB, 48,000,000 colour samples"
+    },
+    {
+      "fr": "FR7",
+      "title": "Start location",
+      "status": "info",
+      "detail": "Manual start location 100 (seed-derived mode not selected)."
+    },
+    {
+      "fr": "FR8",
+      "title": "Extract hidden blob from image (DCT)",
+      "status": "ok",
+      "detail": "length header = 390 bytes\nblob = 4 + 390 + 256 = 650 bytes\nread from start 100 at depth 2 (DCT)"
+    },
+    {
+      "fr": "FR3",
+      "title": "Decode payload JSON",
+      "status": "ok",
+      "detail": "All ALIGNMENT.md Section 4 fields present."
+    },
+    {
+      "fr": "FR4",
+      "title": "Verify RSA signature",
+      "status": "ok",
+      "detail": "Signature matches the payload and public key.\nkey: C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\keys\\public_key.pem"
+    },
+    {
+      "fr": "FR9",
+      "title": "Check cover hash",
+      "status": "skip",
+      "detail": "DCT embedding changes spatial samples; FR9 LSB-plane stable hash does not apply. Authenticity rests on FR4 signature."
+    },
+    {
+      "fr": "FR10",
+      "title": "Verdict (verdict.generate_verdict)",
+      "status": "ok",
+      "detail": "Authentic"
+    }
+  ],
+  "outcome": "Authentic",
+  "provisional": false,
+  "params": {
+    "start_mode": "manual",
+    "start": 100,
+    "seed": "",
+    "lsb_depth": 2,
+    "low_byte_only": false,
+    "frame_step": 1,
+    "use_dct": true,
+    "start_location": 100
+  },
+  "payload": {
+    "media_id": "IMG-20260923185837",
+    "timestamp": "2026-09-23T10:58:37.487413+00:00",
+    "cover_type": "image",
+    "cover_hash": "9d4d84caeb27cc6b23e17c4dceae23f58762d8070377def3fbbbfcb3eac1e0bb",
+    "nonce": "d7263fb9b9536d7e276f64c126e94b27",
+    "message": "Short test message -- replace with the Learning Outcome chosen by the team.",
+    "metadata": {
+      "team": "P1-4",
+      "lsb_depth": 2,
+      "start_mode": "manual",
+      "method": "dct"
+    }
+  },
+  "outputs": {},
+  "stats": {
+    "verdict_context": {
+      "input_ok": true,
+      "input_error": null,
+      "extraction_successful": true,
+      "extraction_error": null,
+      "payload_parsed": true,
+      "printable_ratio": 1.0,
+      "signature_valid": true,
+      "hash_valid": null,
+      "start_location": 100,
+      "lsb_depth": 2,
+      "cover_type": "image"
+    }
+  },
+  "evidence_dir": "C:\\Users\\Jing Wen\\SIT\\Cyber Security Fundamentals (INF2005)\\ACW1\\Working Folder\\CyberSec-ACW1\\tests\\evidence\\20260923-190114_verify_image",
+  "polarity": "positive",
+  "inputs": {
+    "file": {
+      "path": "tests\\evidence\\20260923-185837_protect_image\\stego.png",
+      "sha256": "191b3cf72e2741c013aef17f18d80cf5bfc13e291c43dd8cacaf51817fa5b248",
+      "bytes": 6683627
+    },
+    "public_key": {
+      "path": "keys\\public_key.pem",
+      "sha256": "7dce210a0c57962d2ca6664a9d309a7b7b14e3f9c4330e3a4af298e2c8963c7d",
+      "bytes": 450
+    }
+  },
+  "environment": {
+    "python": "3.13.15",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "pillow": "12.3.0",
+    "pycryptodome": "3.23.0",
+    "git_commit": "72f74e3",
+    "generated": "2026-09-23T19:01:16"
+  }
+}
