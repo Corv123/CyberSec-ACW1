@@ -134,14 +134,14 @@ Any line starting `FAIL`, or a Python traceback, means something is broken.
 ├── requirements.txt
 ├── payload_example.json     example of the signed JSON payload
 ├── src/
-│   ├── crypto_utils.py      Person5  (payload, RSA sign/verify, pack/unpack, cover hash)
-│   ├── image_stego.py       Person1  (embed / extract / tamper helper)
-│   ├── audio_stego.py       Person2
-│   ├── start_location.py    Person3  (seed -> start location + blob encryption)
-│   ├── verdict.py           Person4  (six verdicts + attack simulation)
-│   ├── gui_app.py           Person6  (Tkinter app: tabs)
-│   ├── gui_components.py    Person6  (reusable widgets)
-│   ├── gui_pipeline.py      Person6  (wiring + evidence, no Tk)
+│   ├── crypto_utils.py      Jing Wen  (payload, RSA sign/verify, pack/unpack, cover hash)
+│   ├── image_stego.py       Corvan  (embed / extract / tamper helper)
+│   ├── audio_stego.py       Jeanie
+│   ├── start_location.py    Shannon  (seed -> start location + blob encryption)
+│   ├── verdict.py           Venecia  (six verdicts + attack simulation)
+│   ├── gui_app.py           Karthik  (Tkinter app: tabs)
+│   ├── gui_components.py    Karthik  (reusable widgets)
+│   ├── gui_pipeline.py      Karthik  (wiring + evidence, no Tk)
 │   ├── video_stego.py       optional video cover (same LSB + blob contract)
 │   └── dct_image_stego.py   optional DCT-domain image stego (alternative to LSB)
 ├── keys/                    shared RSA keypair (demo only)
@@ -179,7 +179,7 @@ blob = extract_video(stego, start_location, lsb_depth, frame_step=1)
 
 `frame_step=1` uses every frame; `frame_step=2` is selected-frame embedding (every 2nd frame).
 
-## Person1 API (for GUI / verdict / crypto wiring)
+## Corvan API (for GUI / verdict / crypto wiring)
 
 ```python
 from image_stego import (
@@ -197,7 +197,7 @@ make_tampered_image(stego, tampered_out, start_location, lsb_depth)
 
 Indexing: flat RGB sample index. Wire framing owned by `crypto_utils`, not image_stego.
 
-## Person3 API (start location)
+## Shannon API (start location)
 
 ```python
 from start_location import derive_secrets, apply_mask, explain_security, bias_demo, describe_bias_demo
@@ -222,7 +222,7 @@ demonstrates **Wrong Start Location**). All `extract_*` functions take an option
 The seed is written to evidence reports as `<redacted>`. See the **Innovation** tab
 in the GUI for the live version of `explain_security()` and `bias_demo()`.
 
-## Person6 GUI API (for plugging in your FR)
+## Karthik GUI API (for plugging in your FR)
 
 The GUI detects unfinished functions (body is only `raise NotImplementedError`) and
 shows them as **PENDING**. All functions below are now implemented, so nothing should
@@ -230,11 +230,11 @@ show as PENDING.
 
 | Owner | Implement | GUI effect |
 |---|---|---|
-| Person3 | ✅ `start_location.derive_secrets(cover_size, seed)` / `apply_mask` | "Derive from seed (FR7)" option: start location + blob encryption; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
-| Person3 | ✅ `start_location.explain_security()` -> `str` | Shown on the **Innovation** tab, alongside a live `bias_demo()` chi-square comparison |
-| Person4 | ✅ `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid, context=None)` | Gives the FR10 verdict on Verify and in Test Cases. `hash_valid` may be `None`; `context` carries extraction error, printable ratio, start location, etc. |
-| Person4 | ✅ `verdict.run_attack_simulation()` -> list of dicts | **Run attack simulation** button on the **Innovation** tab (also `python src/verdict.py`) |
-| Person5 | ✅ `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); drives the "media edited" test case |
+| Shannon | ✅ `start_location.derive_secrets(cover_size, seed)` / `apply_mask` | "Derive from seed (FR7)" option: start location + blob encryption; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
+| Shannon | ✅ `start_location.explain_security()` -> `str` | Shown on the **Innovation** tab, alongside a live `bias_demo()` chi-square comparison |
+| Venecia | ✅ `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid, context=None)` | Gives the FR10 verdict on Verify and in Test Cases. `hash_valid` may be `None`; `context` carries extraction error, printable ratio, start location, etc. |
+| Venecia | ✅ `verdict.run_attack_simulation()` -> list of dicts | **Run attack simulation** button on the **Innovation** tab (also `python src/verdict.py`) |
+| Jing Wen | ✅ `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); drives the "media edited" test case |
 
 Call the pipeline without the GUI (from the repo root):
 
