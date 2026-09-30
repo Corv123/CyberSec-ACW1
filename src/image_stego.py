@@ -223,8 +223,14 @@ def embed_image(
     return str(out)
 
 
-def extract_image(stego_path: str, start_location: int, lsb_depth: int) -> bytes:
-    """FR8: extract full packed blob [4|payload|signature] for crypto_utils.unpack()."""
+def extract_image(stego_path: str, start_location: int, lsb_depth: int,
+                  unmask=None) -> bytes:
+    """FR8: extract full packed blob [4|payload|signature] for crypto_utils.unpack().
+
+    `unmask` (optional) decrypts bytes read from the cover -- gui_pipeline passes
+    start_location.apply_mask with the seed-derived key in derive mode. It is
+    applied to the 4-byte header first, then to the whole blob.
+    """
     im = _load_rgb(stego_path)
     samples = _flatten_rgb(im)
     available = _bytes_available(len(samples), start_location, lsb_depth)
@@ -234,6 +240,8 @@ def extract_image(stego_path: str, start_location: int, lsb_depth: int) -> bytes
     header = _extract_bytes(
         samples, 4, start_location=start_location, lsb_depth=lsb_depth
     )
+    if unmask:
+        header = unmask(header)
     (payload_len,) = _LENGTH_STRUCT.unpack(header)
     total = 4 + payload_len + SIGNATURE_LEN
     if total > available:
@@ -241,9 +249,10 @@ def extract_image(stego_path: str, start_location: int, lsb_depth: int) -> bytes
             f"Declared blob size ({total} bytes) exceeds cover capacity ({available})."
         )
 
-    return _extract_bytes(
+    blob = _extract_bytes(
         samples, total, start_location=start_location, lsb_depth=lsb_depth
     )
+    return unmask(blob) if unmask else blob
 
 
 def make_tampered_image(

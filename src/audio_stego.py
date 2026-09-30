@@ -232,6 +232,7 @@ def extract_audio(
     start_location: int,
     lsb_depth: int,
     low_byte_only: bool = False,
+    unmask=None,
 ) -> bytes:
     """FR8: reverse of embed_audio(). Returns the raw blob bytes (payload +
     signature, still packed) for crypto_utils.unpack() to consume.
@@ -242,6 +243,10 @@ def extract_audio(
     lsb_depth/low_byte_only, or a truncated/corrupted file -- verdict.py
     should catch this and map it to "Wrong Start Location", "Payload Missing"
     or "Cannot Verify" as appropriate.
+
+    `unmask` (optional) decrypts bytes read from the cover -- gui_pipeline passes
+    start_location.apply_mask with the seed-derived key in derive mode. It is
+    applied to the 4-byte header first, then to the whole blob.
     """
     if not (1 <= lsb_depth <= 8):
         raise ValueError("lsb_depth must be between 1 and 8.")
@@ -282,6 +287,8 @@ def extract_audio(
         raise ExtractionError("Cover too small to contain the length header.")
 
     header_bytes = _extract_n_bytes(LENGTH_HEADER_SIZE)
+    if unmask:
+        header_bytes = unmask(header_bytes)
     (payload_len,) = _LENGTH_STRUCT.unpack(header_bytes)
     total_blob_len = LENGTH_HEADER_SIZE + payload_len + SIGNATURE_LEN
 
@@ -291,7 +298,8 @@ def extract_audio(
             f"almost certainly the wrong start_location, lsb_depth, or low_byte_only"
         )
 
-    return _extract_n_bytes(total_blob_len)
+    blob = _extract_n_bytes(total_blob_len)
+    return unmask(blob) if unmask else blob
 
 
 # ---------- negative test-case helper ----------

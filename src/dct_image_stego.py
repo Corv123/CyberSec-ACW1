@@ -277,8 +277,14 @@ def extract_dct_image(
     stego_path: str,
     start_location: int,
     lsb_depth: int,
+    unmask=None,
 ) -> bytes:
-    """Extract full packed blob [4|payload|signature] for crypto_utils.unpack()."""
+    """Extract full packed blob [4|payload|signature] for crypto_utils.unpack().
+
+    `unmask` (optional) decrypts bytes read from the cover -- gui_pipeline passes
+    start_location.apply_mask with the seed-derived key in derive mode. It is
+    applied to the 4-byte header first, then to the whole blob.
+    """
     if not (1 <= lsb_depth <= 8):
         raise ValueError("lsb_depth must be between 1 and 8.")
 
@@ -310,13 +316,16 @@ def extract_dct_image(
         return _bits_to_bytes(bits)
 
     header = read_bytes(LENGTH_HEADER_SIZE)
+    if unmask:
+        header = unmask(header)
     (payload_len,) = _LENGTH_STRUCT.unpack(header)
     total = LENGTH_HEADER_SIZE + payload_len + SIGNATURE_LEN
     if total > available:
         raise ExtractionError(
             f"Declared blob size ({total} bytes) exceeds DCT capacity ({available})."
         )
-    return read_bytes(total)
+    blob = read_bytes(total)
+    return unmask(blob) if unmask else blob
 
 
 def make_tampered_dct_image(

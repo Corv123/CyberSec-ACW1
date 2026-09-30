@@ -2,18 +2,19 @@
 start_location.py -- Person3's module (FR7 variable start location, FR13 innovation)
 
 Both image_stego.py and audio_stego.py (via gui_pipeline.py) call
-derive_start_location() so the encoder and decoder always agree on where embedding
+derive_secrets() so the encoder and decoder always agree on where embedding
 began, without the location ever being transmitted or stored in the clear.
 
 Method (see explain_security() for the full write-up):
-  1. Stretch the shared `seed` with PBKDF2-HMAC-SHA256 (many iterations). This is
-     the actual security measure: the stego file and its cover_size are public, so
-     an attacker can already try candidate seeds and use the RSA signature as a
-     correctness oracle (derive -> extract -> verify_signature). Stretching makes
-     every guess in that brute-force loop expensive instead of a single hash call.
+  1. Stretch the shared `seed` with PBKDF2-HMAC-SHA256 (many iterations), so
+     every seed guess costs an attacker real time.
   2. Use the stretched key as an HMAC-SHA256 keystream (counter mode) and reduce it
      to an index in [0, cover_size) by rejection sampling, so every location is
-     equally likely -- no modulo bias.
+     exactly equally likely.
+  3. Derive a second, independent key from the stretched key and XOR-encrypt the
+     whole blob (length header + payload + signature) with its keystream. Without
+     this, the plaintext header and JSON let an attacker skip the seed entirely
+     and just scan every offset (a few seconds on a 48M-sample image).
 
 Self-test from repo root: `python src/start_location.py`
 """
@@ -34,6 +35,10 @@ _SALT_PREFIX = b"ACW1-start-location-v1"
 # still costing an attacker real time per guess.
 PBKDF2_ITERATIONS = 200_000
 _STRETCHED_KEY_LEN = 32  # bytes, matches SHA-256 output
+
+# Domain-separation label for the blob-encryption key, so it is independent of the
+# keystream that picks the start index.
+_MASK_LABEL = b"ACW1-blob-mask-v1"
 
 
 def _stretch_seed(seed: bytes, cover_size: int) -> bytes:
@@ -75,6 +80,42 @@ def _unbiased_index(key: bytes, upper: int) -> int:
         # else: discard and draw the next block(s) -- expected < 2 attempts.
 
 
+def _check_inputs(cover_size: int, seed: bytes) -> None:
+    if cover_size <= 0:
+        raise ValueError("cover_size must be positive")
+    if not isinstance(seed, bytes):
+        raise TypeError("seed must be bytes")
+    if not seed:
+        # An empty seed would give a fixed, publicly computable start and key --
+        # the first thing an attacker would try.
+        raise ValueError("seed must not be empty")
+
+
+def derive_secrets(cover_size: int, seed: bytes) -> tuple[int, bytes]:
+    """One PBKDF2 run -> (start index, blob-encryption key).
+
+    The start index is uniform over [0, cover_size); the key feeds apply_mask().
+    Same seed + same cover_size always gives the same pair, so the verifier
+    re-computes both instead of reading them from the file.
+    """
+    _check_inputs(cover_size, seed)
+    stretched = _stretch_seed(seed, cover_size)
+    start = _unbiased_index(stretched, cover_size)
+    mask_key = hmac.new(stretched, _MASK_LABEL, hashlib.sha256).digest()
+    return start, mask_key
+
+
+def apply_mask(data: bytes, mask_key: bytes) -> bytes:
+    """XOR `data` with the HMAC-SHA256 counter-mode keystream of `mask_key`,
+    starting at keystream offset 0. Its own inverse: apply once to encrypt,
+    again to decrypt. Because it always starts at offset 0, decrypting just the
+    first 4 bytes gives the same header as decrypting the whole blob.
+    """
+    n_blocks = (len(data) + 31) // 32
+    stream = b"".join(_keystream_block(mask_key, i) for i in range(n_blocks))[:len(data)]
+    return (int.from_bytes(data, "big") ^ int.from_bytes(stream, "big")).to_bytes(len(data), "big")
+
+
 def derive_start_location(cover_size: int, seed: bytes) -> int:
     """Given the cover's total addressable size (pixels*channels for images,
     samples*sample_width for audio -- see gui_pipeline.py) and a shared seed,
@@ -84,39 +125,61 @@ def derive_start_location(cover_size: int, seed: bytes) -> int:
 
     Returns: an integer index into the cover's flat data array, 0 <= index < cover_size.
     """
-    if cover_size <= 0:
-        raise ValueError("cover_size must be positive")
-    if not isinstance(seed, bytes):
-        raise TypeError("seed must be bytes")
-
-    stretched = _stretch_seed(seed, cover_size)
-    return _unbiased_index(stretched, cover_size)
+    return derive_secrets(cover_size, seed)[0]
 
 
 def explain_security() -> str:
     """Short explanation for the innovation write-up and live-demo Q&A."""
     return (
-        "How it works: the shared `seed` (a passphrase entered once and reused "
-        "for both Protect and Verify) is stretched with PBKDF2-HMAC-SHA256 "
-        f"({PBKDF2_ITERATIONS:,} iterations) into a 256-bit key. That key drives an "
-        "HMAC-SHA256 counter-mode keystream, which is reduced to an index in "
-        "[0, cover_size) by rejection sampling -- every location in range is "
-        "equally likely (no modulo bias), and the same seed + cover_size always "
-        "reproduces the same start location.\n\n"
-        "Why it resists guessing: the stego file and its cover_size are public, so "
-        "an attacker can already try candidate seeds and use the RSA signature as "
-        "a correctness oracle (derive -> extract -> verify_signature). Without "
-        "stretching, that loop costs one SHA-256 evaluation per guess, making "
-        "short or dictionary seeds crackable in seconds. PBKDF2 makes every guess "
-        f"cost {PBKDF2_ITERATIONS:,} SHA-256 evaluations instead -- that cost, not the "
-        "choice of hash function, is the actual defence.\n\n"
-        "Limitations: all of the security lives in the secrecy and entropy of "
-        "`seed`. A short, reused, or dictionary seed is still crackable, just "
-        "slower; a leaked seed reveals the start location outright, since "
-        "cover_size is not secret; and the iteration count is a fixed constant "
-        "here rather than tuned per deployment. This protects the location from a "
-        "passive or blind attacker, not from one who already knows or can guess "
-        "the seed."
+        "IMPROVEMENT OVER BASELINE (fixed-location LSB)\n"
+        "  Baseline: payload at a known spot, plain text -> read or scanned instantly.\n"
+        "  Ours: start + encryption key from the seed -> full offset scan finds nothing.\n"
+        "  Nothing stored in the file; each seed guess costs "
+        f"{PBKDF2_ITERATIONS:,} PBKDF2 rounds.\n"
+        "\n"
+        "HOW THE START LOCATION IS CHOSEN\n"
+        "  1. Seed (passphrase shared by sender and verifier)\n"
+        f"     -> PBKDF2-HMAC-SHA256, {PBKDF2_ITERATIONS:,} rounds -> 256-bit key.\n"
+        "  2. Key -> HMAC-SHA256 random stream -> start index in [0, cover size),\n"
+        "     picked by rejection sampling so every position is equally likely.\n"
+        "  3. A second key from the same seed XOR-encrypts the whole hidden blob\n"
+        "     (length header + payload + signature).\n"
+        "\n"
+        "WHAT DOES THE SECURITY WORK (and what doesn't)\n"
+        "  - Secret seed + HMAC-SHA256: makes the start unpredictable.\n"
+        f"  - PBKDF2 ({PBKDF2_ITERATIONS:,} rounds): makes every seed guess slow.\n"
+        "  - Blob encryption: stops the scan-every-offset shortcut.\n"
+        "  - Rejection sampling: correctness only. It removes modulo bias so every\n"
+        "    position is exactly equally likely, but adds no unpredictability and\n"
+        "    no security on its own.\n"
+        "\n"
+        "HOW THE VERIFIER FINDS IT\n"
+        "  Nothing about the location is stored in the file. The verifier enters\n"
+        "  the same seed, reads the cover size from the file, and re-runs steps\n"
+        "  1-3 to get the same start and key.\n"
+        "\n"
+        "WHY THE ENCRYPTION MATTERS\n"
+        "  A hidden start on its own is weak: a cover has only ~2^25 positions,\n"
+        "  and a plaintext length header and JSON are easy to spot. Our own test\n"
+        "  scanned every offset of an unencrypted stego image and found the\n"
+        "  payload in ~3 s without the seed. Once encrypted, every offset looks\n"
+        "  like random bits, so the attacker has to guess the seed instead.\n"
+        "\n"
+        "LIMITATIONS\n"
+        "  - Only as strong as the seed. An attacker can still try seeds offline\n"
+        "    (derive -> decrypt -> check RSA signature). PBKDF2 slows each guess\n"
+        "    (0.1-0.5 s on our laptops, less on a GPU), but a short or dictionary\n"
+        "    seed will still fall.\n"
+        "  - Same seed + same cover size = same start and same keystream. Two\n"
+        "    such files leak the XOR of their payloads: use a new seed per file.\n"
+        "  - The seed must reach the verifier through a separate channel.\n"
+        "  - Encryption hides the content, not its presence: LSB steganalysis can\n"
+        "    still detect that something is embedded. XOR is not authenticated\n"
+        "    either; the RSA signature is what catches changes.\n"
+        "  - The start can land too near the end for the payload to fit. Protect\n"
+        "    then rejects it and the user picks another seed.\n"
+        "  - Manual start mode has none of this protection.\n"
+        "  - Empty seeds are rejected, and the seed is redacted from evidence."
     )
 
 
@@ -203,13 +266,19 @@ def describe_bias_demo(result: dict) -> str:
     ]
     if favoured:
         lines.append(
-            f"Inference: 256 % {upper} = {favoured}, so naive modulo structurally favours "
-            f"{favoured} of the {upper} buckets on every single draw -- a fixed pattern, not "
-            "chance. An attacker brute-forcing seeds could exploit that pattern to prioritise "
-            "the favoured region and shrink their effective search space. Rejection sampling "
-            "removes the pattern entirely: every location in range is equally likely by "
-            "construction, which is what the brute-force cost claims in explain_security() "
-            "rely on."
+            f"Why: 256 % {upper} = {favoured}, so naive modulo on a single byte picks "
+            f"{favoured} of the {upper} buckets slightly more often."
+        )
+        lines.append("")
+        lines.append(
+            "How much it matters for us: very little in practice. A naive "
+            "`key % cover_size` over the full 256-bit key would be biased by only "
+            "about 2^-230, far too small to measure or exploit. This demo reduces "
+            "one byte on purpose so the effect is visible. We use rejection "
+            "sampling because it is exactly uniform by design, so there's no need "
+            "to argue that the bias is small enough. It is a correctness fix, not "
+            "a security measure: unpredictability comes from the secret seed, and "
+            "PBKDF2 is what makes guessing slow."
         )
     else:
         lines.append(
@@ -221,7 +290,6 @@ def describe_bias_demo(result: dict) -> str:
 
 
 if __name__ == "__main__":
-    import statistics
     import time
 
     print("FR7 -- derive_start_location() self-test\n")
@@ -249,21 +317,46 @@ if __name__ == "__main__":
     print(f"  {seed_a!r} -> {start_a}")
     print(f"  {seed_b!r} -> {start_b}")
     print(f"  differ: {start_a != start_b}")
+    assert start_a != start_b
 
     # 4. Wrong seed cannot reproduce the right location (what an attacker faces).
-    print(f"\nWrong seed: {derive_start_location(cover_size, b'wrong-guess')} "
-          f"(vs correct {a}) -- differ: {derive_start_location(cover_size, b'wrong-guess') != a}")
+    wrong = derive_start_location(cover_size, b"wrong-guess")
+    print(f"\nWrong seed: {wrong} (vs correct {a}) -- differ: {wrong != a}")
+    assert wrong != a
 
-    # 5. Coarse uniformity spot-check: many seeds, bucket the results.
-    print("\nUniformity spot-check (200 seeds, 8 buckets, expect roughly even spread):")
-    size, buckets = 10_000, [0] * 8
-    for i in range(200):
-        start = derive_start_location(size, f"seed-{i}".encode())
-        buckets[start * 8 // size] += 1
-    print(f"  bucket counts: {buckets}  (mean {statistics.mean(buckets):.1f}, "
-          f"stdev {statistics.pstdev(buckets):.1f})")
+    # 5. Empty seed is rejected (it would give a fixed, public location).
+    try:
+        derive_start_location(cover_size, b"")
+    except ValueError as exc:
+        print(f"\nEmpty seed rejected: {exc}")
+    else:
+        raise AssertionError("empty seed was accepted")
 
-    # 6. Timing: PBKDF2 cost per call (should be well under a second for the GUI).
+    # 6. Blob encryption: round-trips, header decrypts on its own, wrong key fails.
+    _, key = derive_secrets(cover_size, seed)
+    _, wrong_key = derive_secrets(cover_size, b"wrong-guess")
+    blob = struct.pack(">I", 11) + b'{"hello":1}' + bytes(256)
+    enc = apply_mask(blob, key)
+    print(f"\nBlob encryption: header {blob[:4].hex()} -> {enc[:4].hex()}, "
+          f"payload {blob[4:10]!r} -> {enc[4:10]!r}")
+    assert enc != blob and apply_mask(enc, key) == blob
+    assert apply_mask(enc[:4], key) == blob[:4]
+    assert apply_mask(enc, wrong_key) != blob
+    print("  round-trip OK, header decrypts alone, wrong seed gives garbage")
+
+    # 7. Uniformity of the index reduction: chi-square over 20,000 keys, 10 buckets.
+    #    Tests _unbiased_index directly (PBKDF2 output is assumed random), which
+    #    gives far more statistical power than a few hundred slow PBKDF2 calls.
+    size, draws, buckets = 10_007, 20_000, [0] * 10   # prime size -> rejections happen
+    for i in range(draws):
+        start = _unbiased_index(hashlib.sha256(f"key-{i}".encode()).digest(), size)
+        buckets[start * 10 // size] += 1
+    chi2, crit = _chi_square(buckets, draws / 10), _chi2_critical_95(9)
+    print(f"\nUniformity ({draws:,} draws over [0, {size:,}), 10 buckets): "
+          f"chi-square {chi2:.1f} < {crit:.1f}: {chi2 < crit}")
+    assert chi2 < crit
+
+    # 8. Timing: PBKDF2 cost per call (should be well under a second for the GUI).
     t0 = time.perf_counter()
     derive_start_location(cover_size, seed)
     elapsed = time.perf_counter() - t0

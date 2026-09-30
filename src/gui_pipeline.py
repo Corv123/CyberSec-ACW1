@@ -42,7 +42,7 @@ import sys
 import textwrap
 import wave
 from array import array
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -272,35 +272,58 @@ def default_params(**overrides) -> dict:
     return params
 
 
-def _resolve_start(result: RunResult, cover_size: int, params: dict) -> int | None:
+def _resolve_start(result: RunResult, cover_size: int, params: dict
+                   ) -> tuple[int | None, bytes | None]:
+    """-> (start, mask_key). mask_key is the seed-derived blob-encryption key in
+    derive mode, None in manual mode; start is None if the location is unusable.
+    The key is returned, never stored in result.params, so it can't reach evidence."""
     manual = int(params.get("start", 0))
-    start = manual
+    start, mask_key = manual, None
+    title = "Derive start location from seed" if result.action == "protect" \
+        else "Recover start location from seed"
     if params.get("start_mode") == "derive":
-        fn = start_location.derive_start_location
-        seed = str(params.get("seed", "")).encode("utf-8")
+        fn = start_location.derive_secrets
+        seed_text = str(params.get("seed", ""))
+        if not seed_text.strip():
+            result.add("FR7", title, STATUS_FAIL,
+                       "No seed entered. An empty seed gives a start location anyone "
+                       "can compute, so it is not allowed.")
+            return None, None
         try:
-            if is_stub(fn):
+            if is_stub(start_location.derive_start_location):
                 raise NotImplementedError
-            start = int(fn(cover_size, seed))
-            result.add("FR7", "Derive start location from seed", STATUS_OK,
-                       f"derive_start_location(cover_size={cover_size:,}, seed) -> {start}")
+            start, mask_key = fn(cover_size, seed_text.encode("utf-8"))
+            if result.action == "protect":
+                detail = (f"Start = {start:,} (of {cover_size:,} positions), picked from the seed.\n"
+                          "Not stored in the file: Verify re-computes it from the same seed.")
+            else:
+                detail = (f"Start = {start:,} (of {cover_size:,} positions)\n"
+                          f"How: seed -> PBKDF2-HMAC-SHA256 ({start_location.PBKDF2_ITERATIONS:,} "
+                          "rounds) -> key -> uniform pick in [0, cover size)\n"
+                          "The start is not stored in the file: same seed + same cover "
+                          "size always gives the same start.")
+            result.add("FR7", title, STATUS_OK, detail)
         except NotImplementedError:
-            result.add("FR7", "Derive start location from seed", STATUS_PENDING,
+            result.add("FR7", title, STATUS_PENDING,
                        "start_location.derive_start_location() not implemented yet "
                        f"(Person3). Fell back to manual start location {manual}.")
         except Exception as exc:
-            result.add("FR7", "Derive start location from seed", STATUS_FAIL,
-                       f"{type(exc).__name__}: {exc}")
-            return None
+            result.add("FR7", title, STATUS_FAIL, f"{type(exc).__name__}: {exc}")
+            return None, None
     else:
         result.add("FR7", "Start location", STATUS_INFO,
-                   f"Manual start location {manual} (seed-derived mode not selected).")
+                   f"Manual start location {manual:,} (typed in, not protected).")
     if not 0 <= start < cover_size:
         result.add("FR7", "Start location in range", STATUS_FAIL,
                    f"Start {start} is outside the cover (0..{cover_size - 1}).")
-        return None
+        return None, None
     result.params["start_location"] = start
-    return start
+    return start, mask_key
+
+
+def _unmask_fn(mask_key: bytes | None):
+    """Decrypt callback for the extract_* functions (None = plaintext / manual mode)."""
+    return (lambda data: start_location.apply_mask(data, mask_key)) if mask_key else None
 
 
 # ---------- FR9 helpers ----------
@@ -374,7 +397,7 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
         info["stego_method"] = "dct"
     else:
         info["stego_method"] = "lsb" if kind == "image" else kind
-    start = _resolve_start(result, info["cover_size"], params)
+    start, mask_key = _resolve_start(result, info["cover_size"], params)
     if start is None:
         return result
 
@@ -408,6 +431,13 @@ def protect_core(cover, message, params, private_key_path=DEFAULT_PRIVATE_KEY,
     except Exception as exc:
         result.add("FR4", "Sign payload", STATUS_FAIL, f"{type(exc).__name__}: {exc}")
         return result
+
+    if mask_key:
+        blob = start_location.apply_mask(blob, mask_key)
+        result.add("FR7", "Encrypt hidden blob", STATUS_OK,
+                   f"Length header + payload + signature ({len(blob):,} bytes) XOR-encrypted "
+                   "with a key from the same seed.\nWithout the seed, no position in the "
+                   "file looks like a payload.")
 
     fr = {"image": "FR5", "audio": "FR6", "video": "OPT"}.get(kind, "OPT")
     needed = crypto_utils.total_embed_size(payload)
@@ -515,38 +545,43 @@ def verify_core(path, params, public_key_path=DEFAULT_PUBLIC_KEY) -> RunResult:
     elif use_dct:
         info["cover_size"] = dct_image_stego.dct_slot_count(str(path), lsb)
 
-    start = _resolve_start(result, info["cover_size"], params)
+    start, mask_key = _resolve_start(result, info["cover_size"], params)
     if start is None:
         ctx["input_error"] = "start location unavailable"
+        if params.get("start_mode") == "derive" and not str(params.get("seed", "")).strip():
+            ctx["input_ok"] = False   # nothing was checked, so don't claim "Payload Missing"
         return _finish_verdict(result, ctx)
     ctx["start_location"] = start
+    unmask = _unmask_fn(mask_key)
 
     # FR8: extraction
     try:
         if kind == "image" and use_dct:
-            blob = dct_image_stego.extract_dct_image(str(path), start, lsb)
+            blob = dct_image_stego.extract_dct_image(str(path), start, lsb, unmask=unmask)
             extract_label = "Extract hidden blob from image (DCT)"
         elif kind == "image":
-            blob = image_stego.extract_image(str(path), start, lsb)
+            blob = image_stego.extract_image(str(path), start, lsb, unmask=unmask)
             extract_label = "Extract hidden blob from image (LSB)"
         elif kind == "audio":
-            blob = audio_stego.extract_audio(str(path), start, lsb, low)
+            blob = audio_stego.extract_audio(str(path), start, lsb, low, unmask=unmask)
             extract_label = f"Extract hidden blob from {kind}"
         else:
-            blob = video_stego.extract_video(str(path), start, lsb, frame_step)
+            blob = video_stego.extract_video(str(path), start, lsb, frame_step, unmask=unmask)
             extract_label = f"Extract hidden blob from {kind}"
         payload_bytes, signature = crypto_utils.unpack(blob)
         ctx["extraction_successful"] = True
         result.add("FR8" if kind != "video" else "OPT", extract_label, STATUS_OK,
                    f"length header = {len(payload_bytes):,} bytes\n"
                    f"blob = 4 + {len(payload_bytes):,} + {len(signature)} = {len(blob):,} bytes\n"
-                   f"read from start {start} at depth {lsb}"
-                   + (" (DCT)" if use_dct else ""))
+                   f"read from start {start:,} at depth {lsb}"
+                   + (" (DCT)" if use_dct else "")
+                   + ("\ndecrypted with the seed-derived key" if mask_key else ""))
     except Exception as exc:
         ctx["extraction_error"] = f"{type(exc).__name__}: {exc}"
+        causes = "wrong seed, " if mask_key else "wrong start location, "
         result.add("FR8" if kind != "video" else "OPT", f"Extract hidden blob from {kind}", STATUS_FAIL,
-                   ctx["extraction_error"] + "\nLikely causes: no payload in this file, wrong "
-                   "start location, wrong LSB/DCT depth, method mismatch (LSB vs DCT), "
+                   ctx["extraction_error"] + "\nLikely causes: no payload in this file, "
+                   + causes + "wrong LSB/DCT depth, method mismatch (LSB vs DCT), "
                    "or a truncated file.")
         return _finish_verdict(result, ctx)
 
@@ -821,6 +856,15 @@ def run_case_suite(cover, params, messages=None, progress=None) -> dict:
             elif case.id == "media_edit":
                 out = _edit_media_outside_payload(stegos["short"], ev.dir / f"media_edited{ext}", kind)
                 verify_case(case, out)
+            elif case.id == "wrong_start" and params.get("start_mode") == "derive":
+                # Encrypted blob: a wrong guess reads random bits, indistinguishable
+                # from an empty cover -- that is the point, so expect Payload Missing.
+                seeded = replace(case, title="Wrong seed (encrypted blob)",
+                                 expected="Payload Missing")
+                wrong = {**params, "seed": str(params.get("seed", "")) + "-wrong"}
+                verify_case(seeded, stegos["short"], wrong,
+                            note="wrong seed -> wrong start and key, so nothing decrypts. "
+                                 "Manual mode shows the Wrong Start Location verdict.")
             elif case.id == "wrong_start":
                 start = _start_for(stegos["short"], params)
                 wrong = {**params, "start_mode": "manual", "start": start + 1}
@@ -838,7 +882,13 @@ def run_case_suite(cover, params, messages=None, progress=None) -> dict:
 
 def _start_for(path, params) -> int:
     probe = RunResult("probe")
-    start = _resolve_start(probe, inspect_media(path)[1]["cover_size"], params)
+    kind, info, _ = inspect_media(path)
+    size = info["cover_size"]
+    if kind == "video":   # same cover_size rules as protect_core / verify_core
+        size = video_stego.video_cover_size(str(path), max(1, int(params.get("frame_step", 1))))
+    elif kind == "image" and params.get("use_dct"):
+        size = dct_image_stego.dct_slot_count(str(path), int(params.get("lsb_depth", 2)))
+    start, _ = _resolve_start(probe, size, params)
     return int(params.get("start", 0)) if start is None else start
 
 
@@ -1072,6 +1122,15 @@ def environment() -> dict:
             "git_commit": commit or None, "generated": datetime.now().isoformat(timespec="seconds")}
 
 
+def _redact(params: dict) -> dict:
+    """Copy of params safe to write to disk: the FR7 seed is the secret that protects
+    the start location, and evidence folders are committed to git."""
+    out = dict(params)
+    if out.get("seed"):
+        out["seed"] = "<redacted>"
+    return out
+
+
 class Evidence:
     """One timestamped folder per GUI run: report.json (machine) + summary.md (human)."""
 
@@ -1088,6 +1147,7 @@ class Evidence:
     def save_run(self, result: RunResult, inputs: dict, message=None):
         result.evidence_dir = str(self.dir)
         data = result.to_dict()
+        data["params"] = _redact(result.params)
         data["inputs"] = {k: _file_record(v) for k, v in inputs.items()}
         data["outputs"] = {k: _file_record(v) for k, v in result.outputs.items()}
         data["environment"] = environment()
@@ -1100,7 +1160,7 @@ class Evidence:
                  f"**Git commit:** {data['environment']['git_commit']}", "",
                  "## Inputs", ""]
         lines += [f"- {k}: `{v['path']}` sha256 `{v.get('sha256', 'n/a')}`" for k, v in data["inputs"].items()]
-        lines += ["", "## Parameters", "", "```json", json.dumps(result.params, indent=2), "```",
+        lines += ["", "## Parameters", "", "```json", json.dumps(data["params"], indent=2), "```",
                   "", "## Steps", "", "| FR | Step | Status | Detail |", "|---|---|---|---|"]
         lines += [f"| {s.fr} | {s.title} | {s.status.upper()} | {_md(s.detail)} |" for s in result.steps]
         if data["outputs"]:
@@ -1110,6 +1170,7 @@ class Evidence:
         (self.dir / "summary.md").write_text("\n".join(lines) + "\n")
 
     def save_cases(self, rows, summary, cover, params):
+        params = _redact(params)
         data = {"action": "cases", "kind": self.kind, "summary": summary,
                 "cover": _file_record(cover), "params": params, "rows": rows,
                 "environment": environment()}

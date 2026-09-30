@@ -455,8 +455,14 @@ def extract_video(
     start_location: int,
     lsb_depth: int,
     frame_step: int = 1,
+    unmask=None,
 ) -> bytes:
-    """Extract full packed blob [4|payload|signature] for crypto_utils.unpack()."""
+    """Extract full packed blob [4|payload|signature] for crypto_utils.unpack().
+
+    `unmask` (optional) decrypts bytes read from the cover -- gui_pipeline passes
+    start_location.apply_mask with the seed-derived key in derive mode. It is
+    applied to the 4-byte header first, then to the whole blob.
+    """
     if lsb_depth < 1 or lsb_depth > 8:
         raise ValueError("lsb_depth must be between 1 and 8.")
 
@@ -471,6 +477,8 @@ def extract_video(
     header = _extract_from_array(
         header_samples, LENGTH_HEADER_SIZE, start_location=0, lsb_depth=lsb_depth
     )
+    if unmask:
+        header = unmask(header)
     (payload_len,) = _LENGTH_STRUCT.unpack(header)
     total = LENGTH_HEADER_SIZE + payload_len + SIGNATURE_LEN
     if total > available:
@@ -483,7 +491,8 @@ def extract_video(
         body = header_samples[:total_n]
     else:
         body, _ = _read_sample_range(stego_path, frame_step, start_location, total_n)
-    return _extract_from_array(body, total, start_location=0, lsb_depth=lsb_depth)
+    blob = _extract_from_array(body, total, start_location=0, lsb_depth=lsb_depth)
+    return unmask(blob) if unmask else blob
 
 
 def make_tampered_video(

@@ -497,11 +497,13 @@ class InnovationTab(ttk.Frame):
 
         ttk.Label(left, text="Start location innovation (FR7 / FR13)",
                  font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 4))
-        ttk.Label(left, text="derive_start_location() stretches the shared seed with "
-                             "PBKDF2-HMAC-SHA256, then reduces it to a start index by "
-                             "rejection sampling instead of naive modulo, to avoid "
-                             "structural bias. The demo below proves that empirically "
-                             "with a chi-square goodness-of-fit test.",
+        ttk.Label(left, text="The seed is stretched with PBKDF2-HMAC-SHA256, turned into "
+                             "a start index by rejection sampling (exactly uniform), and "
+                             "also used to encrypt the hidden blob so no offset looks like "
+                             "a payload. The demo below shows why rejection sampling is "
+                             "used instead of naive modulo (chi-square test). It fixes "
+                             "bias (correctness) but adds no security; PBKDF2 and the "
+                             "secret seed do that.",
                  wraplength=310, foreground="#555").pack(fill="x", pady=(0, 8))
 
         demo = ttk.LabelFrame(left, text="Bias demo: rejection sampling vs naive modulo",
