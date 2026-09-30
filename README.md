@@ -12,7 +12,7 @@ pip install -r requirements.txt
 
 ## Quick checks
 
-Person5 crypto:
+Jing Wen - crypto:
 
 ```bash
 python src/crypto_utils.py
@@ -24,13 +24,13 @@ Person1 image (positive: embed + extract + signature):
 python src/image_stego.py
 ```
 
-Person1 negative sample only (writes tampered PNG):
+Corvan - negative sample only (writes tampered PNG):
 
 ```bash
 python src/image_stego.py --tamper
 ```
 
-Person6 GUI (Tkinter, no extra install):
+Karthik - GUI (Tkinter, no extra install):
 
 ```bash
 python src/gui_app.py
@@ -69,16 +69,16 @@ Smoke: `python tests/_integration_smoke.py`
 ├── payload_example.json
 ├── instruction.txt
 ├── src/
-│   ├── crypto_utils.py      Person5
-│   ├── image_stego.py       Person1  (embed / extract / tamper helper)
-│   ├── audio_stego.py       Person2
+│   ├── crypto_utils.py      Jing Wen
+│   ├── image_stego.py       Corvan  (embed / extract / tamper helper)
+│   ├── audio_stego.py       Jeanie
 │   ├── video_stego.py       Optional video cover (same LSB + blob contract)
 │   ├── dct_image_stego.py   Optional DCT-domain image stego (alt. to LSB)
-│   ├── start_location.py    Person3
-│   ├── verdict.py           Person4
-│   ├── gui_app.py           Person6  (Tkinter app: tabs)
-│   ├── gui_components.py    Person6  (reusable widgets)
-│   └── gui_pipeline.py      Person6  (wiring + evidence, no Tk)
+│   ├── start_location.py    Shannon
+│   ├── verdict.py           Venecia
+│   ├── gui_app.py           Karthik  (Tkinter app: tabs)
+│   ├── gui_components.py    Karthik  (reusable widgets)
+│   └── gui_pipeline.py      Karthik  (wiring + evidence, no Tk)
 ├── keys/                    RSA keypair (demo)
 ├── samples/                 cover / stego / tampered
 └── tests/                   evidence
@@ -113,7 +113,7 @@ blob = extract_video(stego, start_location, lsb_depth, frame_step=1)
 
 `frame_step=1` uses every frame; `frame_step=2` is selected-frame embedding (every 2nd frame).
 
-## Person1 API (for GUI / verdict / crypto wiring)
+## Corvan - API (for GUI / verdict / crypto wiring)
 
 ```python
 from image_stego import (
@@ -131,7 +131,7 @@ make_tampered_image(stego, tampered_out, start_location, lsb_depth)
 
 Indexing: flat RGB sample index. Wire framing owned by `crypto_utils`, not image_stego.
 
-## Person3 API (start location)
+## Shannon - API (start location)
 
 ```python
 from start_location import derive_start_location, explain_security, bias_demo, describe_bias_demo
@@ -158,11 +158,11 @@ run -- no GUI change needed.
 
 | Owner | Implement | GUI effect |
 |---|---|---|
-| Person3 | ✅ `start_location.derive_start_location(cover_size, seed)` | "Derive from seed (FR7)" option works; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
-| Person3 | ✅ `start_location.explain_security()` -> `str` | Shown on the **Innovation** tab, alongside a live `bias_demo()` chi-square comparison |
-| Person4 | `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid)` | Replaces the provisional verdict (marked `*`). `hash_valid` may be `None`. Add a `context=None` keyword to also receive extraction error, printable ratio, start location, etc. |
-| Person4 | `verdict.run_attack_simulation()` -> list of dicts or `str` | Would show on the **Innovation** tab (no widget wired in yet); available now via `gui_pipeline.run_attack_simulation()`, render with `gui_components.DataTable` |
-| Person5 | *(new, optional)* `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); unblocks the "media edited" test case |
+| Shannon | `start_location.derive_start_location(cover_size, seed)` | "Derive from seed (FR7)" option works; `cover_size` = w*h*3 (image) or nframes*nchannels*sampwidth (audio) |
+| Shannon | `start_location.explain_security()` -> `str` | Shown on the **Innovation** tab, alongside a live `bias_demo()` chi-square comparison |
+| Venecia | `verdict.generate_verdict(extraction_successful, signature_valid, hash_valid)` | Replaces the provisional verdict (marked `*`). `hash_valid` may be `None`. Add a `context=None` keyword to also receive extraction error, printable ratio, start location, etc. |
+| Venecia | `verdict.run_attack_simulation()` -> list of dicts or `str` | Would show on the **Innovation** tab (no widget wired in yet); available now via `gui_pipeline.run_attack_simulation()`, render with `gui_components.DataTable` |
+| Jing Wen | *(new, optional)* `crypto_utils.stable_cover_bytes(path, cover_type, lsb_depth)` -> `bytes` | Used for `cover_hash` on protect and checked on verify (FR9); unblocks the "media edited" test case |
 
 Call the pipeline without the GUI:
 
