@@ -1,5 +1,5 @@
 """
-gui_components.py -- Person6's reusable Tkinter widgets (FR11 / FR12)
+gui_components.py -- Karthik's reusable Tkinter widgets (FR11 / FR12)
 
 Every widget takes plain data (dicts, or Step / RunResult from gui_pipeline) so any
 teammate can drop one into a window for their own FR, e.g.:

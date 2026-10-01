@@ -1,5 +1,5 @@
 """
-crypto_utils.py -- Person5's module (FR3 payload generation, FR4 digital signature, FR9 hash verification)
+crypto_utils.py -- Jing Wen's module (FR3 payload generation, FR4 digital signature, FR9 hash verification)
 
 Used by: image_stego.py, audio_stego.py, verdict.py, gui_app.py
 

@@ -1,5 +1,5 @@
 """
-image_stego.py -- Person1 (FR1 image input, FR5 image embedding, FR8 image extraction)
+image_stego.py -- Corvan (FR1 image input, FR5 image embedding, FR8 image extraction)
 
 Team API (import from this module):
   check_capacity, embed_image, extract_image, make_tampered_image

@@ -1,5 +1,5 @@
 """
-audio_stego.py -- Person2's module (FR2 audio input, FR6 audio embedding, FR8 audio extraction)
+audio_stego.py -- Jeanie's module (FR2 audio input, FR6 audio embedding, FR8 audio extraction)
 
 Team API (import from this module):
   check_capacity, embed_audio, extract_audio, make_tampered_audio

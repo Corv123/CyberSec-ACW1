@@ -1,5 +1,5 @@
 """
-gui_pipeline.py -- Person6's integration layer (FR11 case demonstration, FR12 evidence)
+gui_pipeline.py -- Karthik's integration layer (FR11 case demonstration, FR12 evidence)
 
 No Tkinter in here: this module wires the other five modules together and
 returns plain data (Step / RunResult) that gui_components.py renders. That keeps

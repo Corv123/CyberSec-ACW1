@@ -54,13 +54,16 @@ fails with *Signature Invalid*.
 python src/gui_app.py
 ```
 
-Expected: a window with four tabs.
+Expected: a window with four tabs. It opens at 1320x900 when the screen has room;
+on smaller (or display-scaled) laptop screens it opens maximised, and each tab gets a
+scrollbar instead of being squashed. Scroll down to reach the buttons at the bottom of
+the left column.
 
 | Tab | FRs | What to do |
 |---|---|---|
 | **Protect** | FR1-FR7, FR9 | Pick a cover (`samples/cover_image.png` or `samples/cover_audio.wav`), type a message, choose a start mode, click Protect. Shows each FR step and writes the stego file. |
 | **Verify** | FR8-FR10 | Pick a stego file, use the **same** start mode / seed / LSB depth as Protect. Shows each step and one of six verdicts: Authentic, Tampered, Signature Invalid, Payload Missing, Wrong Start Location, Cannot Verify. |
-| **Test Cases** | FR11 | One click runs every positive and negative case against one cover. Expected: every row PASS. |
+| **Test Cases** | FR11 | **Browse** for a cover first (the pre-filled `file_example_WAV_1MG.wav` is not in the repo; use `samples/cover_audio.wav` for a run of a few seconds), then click **Run all test cases**. Runs 3 positive + 7 negative cases. Expected: every row PASS. |
 | **Innovation** | FR13 | Start-location write-up and chi-square bias demo; attack simulation. |
 
 Start modes: **Manual** (type a start index) or **Derive from seed (FR7)** (type a

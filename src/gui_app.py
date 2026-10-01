@@ -1,5 +1,5 @@
 """
-gui_app.py -- Person6's module (FR11 case demonstration, FR12 evidence/reproducibility)
+gui_app.py -- Karthik's module (FR11 case demonstration, FR12 evidence/reproducibility)
 
 Tkinter GUI (ALIGNMENT.md Section 3). Run from the repo root:
 
@@ -22,6 +22,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from typing import cast
 
 import gui_pipeline as pipeline
 import verdict
@@ -49,13 +50,24 @@ def _results_column(parent):
     return frame
 
 
+# Canvases that scroll with the mouse wheel. ACW1App installs one global wheel
+# handler that scrolls the innermost registered canvas under the pointer, passing
+# the scroll outwards (e.g. Innovation results column -> whole tab page) once the
+# inner one hits its top or bottom.
+_SCROLL_CANVASES: set[str] = set()
+
+
+def _register_scroll_canvas(canvas) -> None:
+    _SCROLL_CANVASES.add(str(canvas))
+
+
 def _scrollable_results_column(parent):
     """Same slot as _results_column, but scrollable -- for tabs (like Innovation)
-    whose stacked result panels can run taller than the window. The mouse-wheel
-    handler is bound globally (not just while hovering the bare canvas
-    background) and guarded by winfo_ismapped(), since this column is fully
-    tiled with child widgets (tables, text boxes, buttons) that would otherwise
-    swallow the wheel event before an Enter/Leave-based binding ever fires."""
+    whose stacked result panels can run taller than the window. Mouse-wheel
+    scrolling goes through ACW1App's global handler (see _SCROLL_CANVASES), which
+    finds this canvas by walking up from whatever widget is under the pointer,
+    since this column is fully tiled with child widgets (tables, text boxes,
+    buttons) that would otherwise swallow the wheel event."""
     container = ttk.Frame(parent, padding=(4, 8, 8, 8))
     container.grid(row=0, column=1, sticky="nsew")
     parent.columnconfigure(1, weight=1)
@@ -81,15 +93,62 @@ def _scrollable_results_column(parent):
     inner.bind("<Configure>", _resize_scrollregion)
     canvas.bind("<Configure>", _resize_inner_width)
 
-    def _wheel(event):
-        if canvas.winfo_ismapped():
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    canvas.bind_all("<MouseWheel>", _wheel)
-    canvas.bind_all("<Button-4>", lambda _e: canvas.winfo_ismapped() and canvas.yview_scroll(-3, "units"))
-    canvas.bind_all("<Button-5>", lambda _e: canvas.winfo_ismapped() and canvas.yview_scroll(3, "units"))
-
+    _register_scroll_canvas(canvas)
     return inner
+
+
+# Narrowest the tab layout was designed for (the old window minsize of 1100 px,
+# minus the window border). Tabs shrink sideways down to this, as they always did;
+# below it a horizontal scrollbar appears instead.
+_MIN_TAB_WIDTH = 1080
+
+
+def _scroll_page(notebook, tab_cls, app):
+    """Wrap one tab in a canvas with vertical + horizontal scrollbars, so the GUI
+    fits any screen. The tab is never squeezed below its natural (requested)
+    height or _MIN_TAB_WIDTH -- on a small screen the scrollbars appear instead --
+    and on a big screen it stretches to fill the window exactly as before.
+    Returns (page, tab)."""
+    page = ttk.Frame(notebook)
+    page.rowconfigure(0, weight=1)
+    page.columnconfigure(0, weight=1)
+    canvas = tk.Canvas(page, highlightthickness=0, borderwidth=0)
+    vsb = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+    hsb = ttk.Scrollbar(page, orient="horizontal", command=canvas.xview)
+    canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+
+    tab = tab_cls(canvas, app)
+    window_id = canvas.create_window((0, 0), window=tab, anchor="nw")
+    last = {}
+
+    def _show(bar, needed, **grid):
+        if needed and not bar.winfo_ismapped():
+            bar.grid(**grid)
+        elif not needed and bar.winfo_ismapped():
+            bar.grid_remove()
+
+    def _sync(_event=None):
+        view_w, view_h = canvas.winfo_width(), canvas.winfo_height()
+        need_w, need_h = min(tab.winfo_reqwidth(), _MIN_TAB_WIDTH), tab.winfo_reqheight()
+        size = (max(view_w, need_w), max(view_h, need_h))
+        if last.get("size") != size:
+            last["size"] = size
+            canvas.itemconfigure(window_id, width=size[0], height=size[1])
+            canvas.configure(scrollregion=(0, 0, *size))
+        _show(vsb, need_h > view_h, row=0, column=1, sticky="ns")
+        _show(hsb, need_w > view_w, row=1, column=0, sticky="ew")
+
+    def _poll():
+        # Tab content can grow after a run (results, previews); re-check its size.
+        if canvas.winfo_exists():
+            _sync()
+            canvas.after(400, _poll)
+
+    canvas.bind("<Configure>", _sync)
+    _register_scroll_canvas(canvas)
+    canvas.after(400, _poll)
+    return page, tab
 
 
 class ProtectTab(ttk.Frame):
@@ -99,10 +158,15 @@ class ProtectTab(ttk.Frame):
         super().__init__(parent)
         self.app, self.result = app, None
         left, right = _controls_column(self), _results_column(self)
+        # Wider left column on this tab only: it still leaves room for all three
+        # Before / After / Difference previews on a 1280-px-wide (scaled) laptop screen.
+        left_width = 420
+        self.columnconfigure(0, minsize=left_width)
+        left.grid_configure(sticky="nsew")
 
         self.cover = FileField(left, "Cover file (PNG image / WAV audio / AVI video)", on_change=self._on_cover)
         self.cover.pack(fill="x")
-        self.info = ttk.Label(left, text="", wraplength=310, foreground="#555")
+        self.info = ttk.Label(left, text="", wraplength=left_width - 20, foreground="#555")
         self.info.pack(fill="x", pady=(2, 6))
 
         msg = ttk.LabelFrame(left, text="Secret message (FR3)", padding=6)
@@ -113,7 +177,11 @@ class ProtectTab(ttk.Frame):
         for name in ("short", "large", "custom"):
             ttk.Radiobutton(row, text=name.title(), value=name, variable=self.preset,
                             command=self._load_preset).pack(side="left")
-        self.message = tk.Text(msg, height=5, wrap="word")
+        # width=1: without it Tk defaults to 80 characters, which stretched the whole
+        # left column past its designed 330 px and pushed the Difference preview off
+        # screen. fill="x" still makes the box span the column; 7 lines (was 5) keeps
+        # about as much text visible now that each wrapped line is shorter.
+        self.message = tk.Text(msg, height=7, width=1, wrap="word")
         self.message.pack(fill="x", pady=(4, 0))
         self.msg_count = ttk.Label(msg, text="")
         self.msg_count.pack(anchor="e")
@@ -210,7 +278,7 @@ class ProtectTab(ttk.Frame):
     def _send_to_verify(self):
         params = dict(self.result.params)
         self.app.verify_tab.prefill(self.result.outputs["stego"], params)
-        self.app.notebook.select(self.app.verify_tab)
+        self.app.notebook.select(self.app.verify_page)
 
     def _save_as(self):
         src = Path(self.result.outputs["stego"])
@@ -228,13 +296,17 @@ class VerifyTab(ttk.Frame):
         super().__init__(parent)
         self.app, self.result = app, None
         left, right = _controls_column(self), _results_column(self)
+        # Same left-column width as the Protect tab, so the two tabs line up.
+        left_width = 420
+        self.columnconfigure(0, minsize=left_width)
+        left.grid_configure(sticky="nsew")
 
         self.file = FileField(left, "File to verify (PNG / WAV / AVI)", on_change=self._on_file)
         self.file.pack(fill="x")
-        self.info = ttk.Label(left, text="", wraplength=310, foreground="#555")
+        self.info = ttk.Label(left, text="", wraplength=left_width - 20, foreground="#555")
         self.info.pack(fill="x", pady=(2, 6))
         ttk.Label(left, text="Use the same start location and LSB depth as when protecting.",
-                  wraplength=310, foreground="#1565c0").pack(fill="x")
+                  wraplength=left_width - 20, foreground="#1565c0").pack(fill="x")
         self.params = ParamsFrame(left)
         self.params.pack(fill="x", pady=6)
         self.key = FileField(left, "Public key (verification, FR4)", KEY_FILETYPES,
@@ -319,6 +391,10 @@ class CasesTab(ttk.Frame):
         super().__init__(parent)
         self.app, self.last = app, None
         left, right = _controls_column(self), _results_column(self)
+        # Same left-column width as the Protect / Verify tabs.
+        left_width = 420
+        self.columnconfigure(0, minsize=left_width)
+        left.grid_configure(sticky="nsew")
 
         self.cover = FileField(left, "Cover file (PNG image / WAV audio / AVI video)",
                                initial=pipeline.ROOT / "samples" / "file_example_WAV_1MG.wav",
@@ -329,12 +405,15 @@ class CasesTab(ttk.Frame):
         self.params.set_kind("audio")
         msg = ttk.LabelFrame(left, text="Custom message (short/large use the presets)", padding=6)
         msg.pack(fill="x")
-        self.custom = tk.Text(msg, height=4, wrap="word")
+        # width=1 for the same reason as the Protect tab's message box (Tk's 80-char
+        # default stretched this column to ~670 px); 6 lines (was 4) offsets the
+        # shorter wrapped lines.
+        self.custom = tk.Text(msg, height=6, width=1, wrap="word")
         self.custom.insert("1.0", pipeline.MESSAGE_PRESETS["custom"])
         self.custom.pack(fill="x")
         ttk.Label(left, text="Runs: 3 positive (short / large / custom) + 7 negative cases. "
                              "A 4000x4000 image takes about a minute; audio a few seconds.",
-                  wraplength=310, foreground="#555").pack(fill="x", pady=6)
+                  wraplength=left_width - 20, foreground="#555").pack(fill="x", pady=6)
         self.run_btn = ttk.Button(left, text="▶  Run all test cases", command=self.run)
         self.run_btn.pack(fill="x", pady=(4, 2))
         self.progress = ttk.Progressbar(left, mode="determinate")
@@ -715,8 +794,7 @@ class ACW1App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Steganographic Verification Tool - ACW1")
-        self.geometry("1320x900")
-        self.minsize(1100, 760)
+        self._fit_to_screen(1320, 900)
 
         header = ttk.Frame(self, padding=(10, 6))
         header.pack(fill="x")
@@ -727,15 +805,54 @@ class ACW1App(tk.Tk):
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
-        self.protect_tab = ProtectTab(self.notebook, self)
-        self.verify_tab = VerifyTab(self.notebook, self)
-        self.cases_tab = CasesTab(self.notebook, self)
-        self.innovation_tab = InnovationTab(self.notebook, self)
-        for tab, text in ((self.protect_tab, "1. Protect"), (self.verify_tab, "2. Verify"),
-                          (self.cases_tab, "3. Test Cases (FR11)"),
-                          (self.innovation_tab, "4. Innovation (FR13)")):
-            self.notebook.add(tab, text=text)
+        # Each tab sits in its own scrollable page (see _scroll_page) so the GUI fits
+        # small screens; tabs themselves are unchanged.
+        self.protect_page, self.protect_tab = _scroll_page(self.notebook, ProtectTab, self)
+        self.verify_page, self.verify_tab = _scroll_page(self.notebook, VerifyTab, self)
+        self.cases_page, self.cases_tab = _scroll_page(self.notebook, CasesTab, self)
+        self.innovation_page, self.innovation_tab = _scroll_page(self.notebook, InnovationTab, self)
+        for page, text in ((self.protect_page, "1. Protect"), (self.verify_page, "2. Verify"),
+                           (self.cases_page, "3. Test Cases (FR11)"),
+                           (self.innovation_page, "4. Innovation (FR13)")):
+            self.notebook.add(page, text=text)
+        self.bind_all("<MouseWheel>", self._on_wheel)
+        self.bind_all("<Shift-MouseWheel>", lambda e: self._on_wheel(e, horizontal=True))
+        self.bind_all("<Button-4>", lambda e: self._on_wheel(e, units=-3))
+        self.bind_all("<Button-5>", lambda e: self._on_wheel(e, units=3))
         self._update_summary()
+
+    def _fit_to_screen(self, want_w, want_h):
+        """Open at the designed size when the screen has room; otherwise fill the
+        screen (maximised on Windows) and let the tab pages scroll."""
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = min(want_w, screen_w - 40), min(want_h, screen_h - 100)  # taskbar + title bar
+        self.geometry(f"{w}x{h}+{max(0, (screen_w - w) // 2)}+{max(0, (screen_h - h) // 3)}")
+        self.minsize(min(640, w), min(420, h))
+        if (w, h) != (want_w, want_h) and self.tk.call("tk", "windowingsystem") == "win32":
+            self.state("zoomed")
+
+    def _on_wheel(self, event, units=None, horizontal=False):
+        """Scroll the innermost scrollable area under the pointer; if it is already
+        at its end (or can't scroll), pass the scroll to the next one outwards."""
+        if units is None:
+            units = -1 if event.delta > 0 else 1
+            units *= max(1, abs(event.delta) // 120)
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
+        while widget is not None:
+            if widget.winfo_class() in ("Text", "Treeview", "Listbox") and not horizontal:
+                first, last = cast(tk.Text, widget).yview()   # all three have yview()
+                if (units < 0 and first > 0) or (units > 0 and last < 1):
+                    return   # the box scrolls itself (its own class binding)
+            elif str(widget) in _SCROLL_CANVASES:
+                canvas = cast(tk.Canvas, widget)
+                first, last = canvas.xview() if horizontal else canvas.yview()
+                if (units < 0 and first > 0) or (units > 0 and last < 1):
+                    (canvas.xview_scroll if horizontal else canvas.yview_scroll)(units, "units")
+                    return
+            widget = widget.master
 
     def after_run(self):
         self._update_summary()

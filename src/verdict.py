@@ -1,5 +1,5 @@
 """
-verdict.py -- Person4's module (FR10 verdict generation, FR13 innovation)
+verdict.py -- Venecia's module (FR10 verdict generation, FR13 innovation)
 
 Consumes:
 - crypto_utils.verify_signature() / verify_hash() results

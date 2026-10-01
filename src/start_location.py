@@ -1,5 +1,5 @@
 """
-start_location.py -- Person3's module (FR7 variable start location, FR13 innovation)
+start_location.py -- Shannon's module (FR7 variable start location, FR13 innovation)
 
 Both image_stego.py and audio_stego.py (via gui_pipeline.py) call
 derive_secrets() so the encoder and decoder always agree on where embedding
